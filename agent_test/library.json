@@ -1,0 +1,147 @@
+{
+  "personal_info": {
+    "first_name": "Joshua",
+    "last_name": "Li",
+    "email": "joshualingli@gmail.com",
+    "password": "ManekoNeki0!",
+    "phone": "(480) 616-8194",
+    "address": "800 S Abel St, Unit 506",
+    "city": "Milpitas",
+    "state": "California",
+    "zip_code": "95035",
+    "country": "United States",
+    "github": "https://github.com/faradayj",
+    "linkedin": "https://linkedin.com/in/joshualingli",
+    "portfolio": ""
+  },
+  "role_preferences": {
+    "target_titles": ["Software Engineer", "Data Scientist", "Machine Learning Engineer"],
+    "recent_work_context": "Training machine learning models based on onboarding graph linkage vector features.",
+    "anticipated_start_date_preference": "One month out from the current date",
+    "location_and_relocation_rule": "The candidate is open to relocate anywhere in the United States. If the form presents a checkbox list of multiple locations to select from, select ALL of them."
+  },
+  "education_history": [
+    {
+      "institution_variants": ["Arizona State University", "ASU"],
+      "degree_type": "Master's Degree",
+      "major_variants": ["Computer Science", "Computer Science Engineering", "CSE"],
+      "start_month": "August",
+      "start_year": "2025",
+      "end_month": "December",
+      "end_year": "2027",
+      "gpa": "4.0",
+      "current_status": "Still attending"
+    },
+    {
+      "institution_variants": ["University of California, San Diego", "UC San Diego", "UCSD"],
+      "degree_type": "Bachelor's Degree",
+      "major_variants": ["Data Science", "Computer Science"],
+      "start_month": "September",
+      "start_year": "2020",
+      "end_month": "March",
+      "end_year": "2025",
+      "gpa": "3.91",
+      "current_status": "Graduated"
+    }
+  ],
+  "work_experience": [
+    {
+      "company": "BILL",
+      "company_variants": ["BILL", "Bill.com"],
+      "role": "Associate Fraud Risk Strategy Data Scientist",
+      "location": "6220 America Center Dr Ste 100, San Jose, CA 95002",
+      "address": "6220 America Center Dr Ste 100",
+      "city": "San Jose",
+      "state": "California",
+      "zip_code": "95002",
+      "country": "United States",
+      "start_month": "December",
+      "start_year": "2025",
+      "end_month": "",
+      "end_year": "",
+      "current_status": "Currently work here",
+      "description": "Engineered a multi-objective NSGA-II genetic algorithm via Optuna to jointly optimize 15 production rules, processing 15,000 trials in 2 minutes and reducing manual referrals by 4.4% per quarter. Prototyped a KYC fraud detection system combining a Random Forest model (0.79 AUC), a NetworkX identity graph utilizing vectorized identity signals, and an agentic AI LiteLLM tool-calling loop to synthesize investigation tickets. Deployed an end-to-end AWS SageMaker batch ML pipeline utilizing graph-based fanout, achieving 99.5% recall and 94.5% precision on reachable fraud. Identified and resolved a portfolio-wide pipeline bug affecting 411,000 payment events across a 6 month window, enabling clean rule re-tuning. Developed automated KPI dashboards with Tableau, providing stakeholders with real-time visibility into fraud prevention trends, rule performance week-over-week, and loss prevention metrics."
+    },
+    {
+      "company": "Single Particle LLC",
+      "company_variants": ["Single Particle", "Single Particle LLC"],
+      "role": "Software Programming Intern",
+      "location": "San Diego, CA",
+      "city": "San Diego",
+      "state": "California",
+      "country": "United States",
+      "start_month": "July",
+      "start_year": "2023",
+      "end_month": "October",
+      "end_year": "2023",
+      "current_status": "Ended",
+      "description": "Fine-tuned ChatGPT models for cryo-electron microscopy (cryoEM) workstations and led the integration of AI into the company website."
+    },
+    {
+      "company": "Intel Corporation",
+      "company_variants": ["Intel", "Intel Corporation"],
+      "role": "Software Programming Intern",
+      "location": "Folsom, CA",
+      "city": "Folsom",
+      "state": "California",
+      "country": "United States",
+      "start_month": "June",
+      "start_year": "2022",
+      "end_month": "September",
+      "end_year": "2022",
+      "current_status": "Ended",
+      "description": "Engineered and rigorously tested data science workflows tailored to various industry sectors, enhancing team insights into workstation performance. Conducted extensive benchmarking of workflows by simulating real-world industry use cases using Python and Scikit-Learn, improving efficiency by 20%."
+    }
+  ],
+  "job_board_mappings": {
+    "previously_applied_amazon": "Yes",
+    "previously_employed_amazon": "No",
+    "non_compete_preclusion": "No",
+    "eligible_begin_immediately": "Yes",
+    "requires_visa_sponsorship": "No",
+    "held_h1b_past_6_years": "No",
+    "future_opportunities_consent": "Yes"
+  },
+  "routing_priorities": {
+    "contextual_citizenship_and_export_rules": "Determine whether the job listing is based in the US or Canada. If the role is located in the US, select 'United States of America (USA)' for citizenship and export control fields. If the role is located in Canada, act entirely as a Canadian native: select 'Canada' for citizenship and 'Canada' for export licensing country fields.",
+    "us_location_priority_ladder": [
+      "MATCH_LISTING_LOCATION_FIRST",
+      "San Francisco, CA",
+      "Bay Area (San Jose, San Francisco, Milpitas)",
+      "Arizona (AZ)",
+      "Los Angeles, CA",
+      "San Diego, CA",
+      "California (Other)",
+      "Seattle, WA",
+      "New York, NY",
+      "Chicago, IL",
+      "Anywhere else in the United States",
+      "Any location in Canada"
+    ],
+    "canada_location_priority_ladder": [
+      "MATCH_LISTING_LOCATION_FIRST",
+      "Vancouver, BC",
+      "Any location in Canada",
+      "San Francisco, CA",
+      "Arizona (AZ)"
+    ],
+    "location_selection_execution_rule": "When resolving a relocation or location drop-down field: 1. Evaluate if any option in the webpage drop-down matches the exact city/location stated in the active job listing page text. If a match exists, prioritize and select that option. 2. If the listing location is not an option, use the corresponding country ladder (US or Canada) to find and select the highest available fallback match present in the webpage options list."
+  },
+  "compensation_rules": {
+    "baseline_target_pay": "140000",
+    "range_midpoint_rule": "If the job description lists an explicit salary range corresponding to the primary target location (prioritizing the San Francisco / California tier if multiple states are listed), calculate the exact mathematical midpoint between the minimum and maximum salary boundary numbers. Return that calculated midpoint value formatted as a rounded integer."
+  },
+  "regulatory_self_identification": {
+    "primary_demographic_action": "Decline To Self Identify",
+    "fallback_gender": "Male",
+    "fallback_hispanic_ethnicity": "No",
+    "fallback_race": "Asian",
+    "veteran_status_selection": "I am not a protected veteran",
+    "disability_status_rule": "Select 'Yes, I have a disability, or have had one in the past' because standard regulatory forms (Form CC-305) explicitly include conditions like depression and ADHD within their self-identification guidelines."
+  },
+  "file_attachments": {
+    "resume_absolute_path": "E:/Misc/Code/Jobs/agent_test/joshua_li_resume_6_2026.pdf",
+    "cover_letter_absolute_path": ""
+  },
+  "skills": ["Python", "SQL", "R", "C", "C++", "Java", "JavaScript", "TypeScript", "HTML/CSS", "MATLAB", "Pandas", "PyTorch", "TensorFlow", "Keras", "Dask", "Scikit-learn", "NetworkX", "Plotly", "Seaborn", "React", "Flask", "Django", "Spark", "Hadoop", "Optuna", "MySQL", "Postgres", "NoSQL", "MongoDB", "Starburst", "Databricks", "AWS", "Google Cloud", "Docker", "Tableau", "Machine Learning", "Data Science"]
+}
