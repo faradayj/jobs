@@ -11,20 +11,39 @@
     "zip_code": "95035",
     "country": "United States",
     "github": "https://github.com/faradayj",
-    "linkedin": "https://linkedin.com/in/joshualingli",
+    "linkedin": "https://www.linkedin.com/in/joshualingli",
     "portfolio": ""
   },
   "role_preferences": {
-    "target_titles": ["Software Engineer", "Data Scientist", "Machine Learning Engineer"],
+    "target_titles": [
+      "Software Engineer",
+      "Data Scientist",
+      "Machine Learning Engineer"
+    ],
     "recent_work_context": "Training machine learning models based on onboarding graph linkage vector features.",
     "anticipated_start_date_preference": "One month out from the current date",
     "location_and_relocation_rule": "The candidate is open to relocate anywhere in the United States. If the form presents a checkbox list of multiple locations to select from, select ALL of them."
   },
   "education_history": [
     {
-      "institution_variants": ["Arizona State University", "ASU"],
+      "institution_variants": [
+        "Arizona State University",
+        "ASU"
+      ],
       "degree_type": "Master's Degree",
-      "major_variants": ["Computer Science", "Computer Science Engineering", "CSE"],
+      "degree_abbreviation": "MS",
+      "degree_search_variants": [
+        "MS",
+        "Master of Science",
+        "Masters",
+        "Master's"
+      ],
+      "major_variants": [
+        "Computer Science",
+        "Computer Science Engineering",
+        "CSE"
+      ],
+      "major_search_term": "Computer Science",
       "start_month": "August",
       "start_year": "2025",
       "end_month": "December",
@@ -33,9 +52,23 @@
       "current_status": "Still attending"
     },
     {
-      "institution_variants": ["University of California, San Diego", "UC San Diego", "UCSD"],
+      "institution_variants": [
+        "University of California, San Diego",
+        "UC San Diego",
+        "UCSD"
+      ],
       "degree_type": "Bachelor's Degree",
-      "major_variants": ["Data Science", "Computer Science"],
+      "degree_abbreviation": "BS",
+      "degree_search_variants": [
+        "BS",
+        "Bachelor of Science",
+        "Bachelor's"
+      ],
+      "major_variants": [
+        "Data Science",
+        "Computer Science"
+      ],
+      "major_search_term": "Data Science",
       "start_month": "September",
       "start_year": "2020",
       "end_month": "March",
@@ -47,7 +80,10 @@
   "work_experience": [
     {
       "company": "BILL",
-      "company_variants": ["BILL", "Bill.com"],
+      "company_variants": [
+        "BILL",
+        "Bill.com"
+      ],
       "role": "Associate Fraud Risk Strategy Data Scientist",
       "location": "6220 America Center Dr Ste 100, San Jose, CA 95002",
       "address": "6220 America Center Dr Ste 100",
@@ -64,7 +100,10 @@
     },
     {
       "company": "Single Particle LLC",
-      "company_variants": ["Single Particle", "Single Particle LLC"],
+      "company_variants": [
+        "Single Particle",
+        "Single Particle LLC"
+      ],
       "role": "Software Programming Intern",
       "location": "San Diego, CA",
       "city": "San Diego",
@@ -75,11 +114,14 @@
       "end_month": "October",
       "end_year": "2023",
       "current_status": "Ended",
-      "description": "Fine-tuned ChatGPT models for cryo-electron microscopy (cryoEM) workstations and led the integration of AI into the company website."
+      "description": "Fine-tuned ChatGPT models for cryo-electron microscopy (cryoEM) workstations to improve AI-assisted scientific imaging workflows. Led the integration of AI capabilities into the company website, enabling direct user interaction with fine-tuned models for cryo-EM data analysis tasks."
     },
     {
       "company": "Intel Corporation",
-      "company_variants": ["Intel", "Intel Corporation"],
+      "company_variants": [
+        "Intel",
+        "Intel Corporation"
+      ],
       "role": "Software Programming Intern",
       "location": "Folsom, CA",
       "city": "Folsom",
@@ -96,11 +138,15 @@
   "job_board_mappings": {
     "previously_applied_amazon": "Yes",
     "previously_employed_amazon": "No",
+    "previously_worked_for_company": "No",
     "non_compete_preclusion": "No",
+    "non_compete_agreement": "No",
     "eligible_begin_immediately": "Yes",
     "requires_visa_sponsorship": "No",
     "held_h1b_past_6_years": "No",
-    "future_opportunities_consent": "Yes"
+    "legally_authorized_to_work_us": "Yes",
+    "future_opportunities_consent": "Yes",
+    "referral_source": "LinkedIn"
   },
   "routing_priorities": {
     "contextual_citizenship_and_export_rules": "Determine whether the job listing is based in the US or Canada. If the role is located in the US, select 'United States of America (USA)' for citizenship and export control fields. If the role is located in Canada, act entirely as a Canadian native: select 'Canada' for citizenship and 'Canada' for export licensing country fields.",
@@ -137,11 +183,60 @@
     "fallback_hispanic_ethnicity": "No",
     "fallback_race": "Asian",
     "veteran_status_selection": "I am not a protected veteran",
+    "disability_answer": "yes",
     "disability_status_rule": "Select 'Yes, I have a disability, or have had one in the past' because standard regulatory forms (Form CC-305) explicitly include conditions like depression and ADHD within their self-identification guidelines."
   },
   "file_attachments": {
-    "resume_absolute_path": "E:/Misc/Code/Jobs/agent_test/joshua_li_resume_6_2026.pdf",
+    "resume_absolute_path": "/Users/joshua.li/Documents/etc/jobs/agent_test/joshua_li_resume_6_2026.pdf",
     "cover_letter_absolute_path": ""
   },
-  "skills": ["Python", "SQL", "R", "C", "C++", "Java", "JavaScript", "TypeScript", "HTML/CSS", "MATLAB", "Pandas", "PyTorch", "TensorFlow", "Keras", "Dask", "Scikit-learn", "NetworkX", "Plotly", "Seaborn", "React", "Flask", "Django", "Spark", "Hadoop", "Optuna", "MySQL", "Postgres", "NoSQL", "MongoDB", "Starburst", "Databricks", "AWS", "Google Cloud", "Docker", "Tableau", "Machine Learning", "Data Science"]
+  "skills": [
+    "Python Programming",
+    "SQL",
+    "R Programming",
+    "C",
+    "C++ Programming",
+    "Java",
+    "JavaScript",
+    "TypeScript",
+    "HTML",
+    "MATLAB",
+    "Pandas",
+    "PyTorch",
+    "TensorFlow",
+    "Keras",
+    "Dask",
+    "Scikit-learn",
+    "NetworkX",
+    "Plotly",
+    "Seaborn",
+    "React",
+    "Flask",
+    "Django",
+    "Apache Spark",
+    "Hadoop",
+    "Optuna",
+    "MySQL",
+    "PostgreSQL",
+    "NoSQL",
+    "MongoDB",
+    "Starburst",
+    "Databricks",
+    "Amazon Web Services",
+    "Google Cloud",
+    "Docker",
+    "Tableau",
+    "Machine Learning",
+    "Data Science"
+  ],
+  "languages": [
+    {
+      "language": "English",
+      "proficiency": "Fluent"
+    },
+    {
+      "language": "Chinese",
+      "proficiency": "Intermediate"
+    }
+  ]
 }
