@@ -77,6 +77,8 @@ PROFILE_SUMMARY = json.dumps({
     "personal_info": {k: v for k, v in PI.items() if k != "password"},
     "work_experience": WE,
     "education_history": EDU,
+    "skills": LIBRARY.get("skills", []),
+    "languages": LIBRARY.get("languages", []),
     "role_preferences":   LIBRARY.get("role_preferences", {}),
     "compensation_rules": LIBRARY.get("compensation_rules", {}),
     "regulatory_self_identification": LIBRARY.get("regulatory_self_identification", {}),
@@ -98,13 +100,63 @@ Rules:
 - Age 18+ / authorized to work → "Yes".
 - Non-compete / prior employment at this company → "No" unless profile says otherwise.
 - Open-ended text → concise honest answer from profile.
+- Skills fields → use the skills array; pick the closest matching option from available choices.
+- Language fields → use the languages array for language name and proficiency level.
+- If filling a specific Work Experience / Education / Language entry, an "Entry Context" block
+  will be provided — use ONLY that entry's data for fields in that dialog, not other entries.
+- For selectinput/button-dropdown fields, your value must EXACTLY match one of the provided options.
 - Skip nav buttons, already-filled fields, fields with no relevant data.
 
 Respond ONLY with valid JSON: {"answers": [{"index": <int>, "value": "<string>"}]}
 Only include fields you have an answer for."""
 
-async def deepseek_fill_page(fields: list[dict]) -> list[dict]:
-    """Send all page fields to DeepSeek. Returns [{index, value}] or [] on error/no key."""
+async def deepseek_pick_skill(search_term: str, options: list[str], already_selected: list[str]) -> str | None:
+    """Ask DeepSeek which dropdown option best matches the desired skill.
+    Returns the exact option string to click, or None to skip.
+    already_selected: pills already in the field (to avoid re-selecting/deselecting)."""
+    if not DEEPSEEK_KEY:
+        return None
+    already_note = (f"\nAlready selected (DO NOT pick these — clicking again deselects): {already_selected}"
+                    if already_selected else "")
+    prompt = (f"I am filling a skills field on a job application.\n"
+              f"I searched for: {search_term!r}\n"
+              f"The dropdown shows these options:\n" +
+              "\n".join(f"  {i+1}. {o}" for i, o in enumerate(options)) +
+              f"{already_note}\n\n"
+              f"Which option is the best match for a candidate with this profile?\n"
+              f"Profile skills context: {PROFILE_SUMMARY}\n\n"
+              f"Reply ONLY with the exact option text from the list, or 'NONE' if no option is a good match.")
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.post("https://api.deepseek.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {DEEPSEEK_KEY}"},
+                json={"model": "deepseek-chat", "temperature": 0.0, "max_tokens": 80,
+                      "messages": [{"role": "system", "content": "You are a precise job application assistant. Follow instructions exactly."},
+                                   {"role": "user",   "content": prompt}]})
+        reply = r.json()["choices"][0]["message"]["content"].strip()
+        if reply.upper() == "NONE" or not reply:
+            return None
+        # Verify the reply actually matches one of the provided options (case-insensitive)
+        reply_l = reply.lower()
+        match = next((o for o in options if o.lower() == reply_l), None)
+        if match is None:
+            # Partial match fallback — LLM sometimes adds/removes parenthetical
+            match = next((o for o in options if reply_l in o.lower() or o.lower() in reply_l), None)
+        return match
+    except Exception as e:
+        print(f"  [LLM] deepseek_pick_skill error: {e}")
+        return None
+
+
+async def deepseek_fill_page(fields: list[dict],
+                             entry: dict = None,
+                             section_type: str = "") -> list[dict]:
+    """Send page/dialog fields to DeepSeek. Returns [{index, value}] or [] on error/no key.
+
+    entry + section_type are passed for add-dialog calls so the LLM knows exactly which
+    Work Experience / Education / Language entry it is currently filling.
+    """
     if not DEEPSEEK_KEY:
         return []
     field_lines = []
@@ -114,8 +166,17 @@ async def deepseek_fill_page(fields: list[dict]) -> list[dict]:
         if f.get("value"):   line += f" current={f['value']!r}"
         if f.get("section"): line += f" section={f['section']!r}"
         field_lines.append(line)
-    prompt = (f"Candidate Profile:\n{PROFILE_SUMMARY}\n\n"
-              f"Form Fields (page: {fields[0].get('page_heading','') if fields else ''}):\n"
+
+    # Build entry context block so LLM knows which specific entry it's filling
+    entry_context = ""
+    if entry and section_type:
+        entry_context = (f"\nEntry Context (you are filling ONE {section_type} entry — "
+                         f"use ONLY this data for these fields):\n"
+                         f"{json.dumps(entry, indent=2)}\n")
+
+    prompt = (f"Candidate Profile:\n{PROFILE_SUMMARY}\n"
+              f"{entry_context}"
+              f"\nForm Fields (page: {fields[0].get('page_heading','') if fields else ''}):\n"
               + "\n".join(field_lines))
     try:
         import httpx
@@ -220,15 +281,16 @@ def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
         if label_match(label, "disability"):
             ll = label.lower()
             if DISABILITY_ANSWER == "yes":
-                # Select the "Yes, I have a disability" option
-                if any(k in ll for k in ("yes, i have", "have a disability", "had one in the past")):
+                # "Yes, I have a disability" — must contain "yes" (not just "have a disability"
+                # which is also a substring of "No, I do NOT have a disability")
+                if "yes" in ll and "disability" in ll:
                     return "true"
                 return "false"
             else:
-                # Select "No" or "I don't wish to answer"
-                if any(k in ll for k in ("no, i do not", "do not have", "not have a disability")):
+                # Select "No, I do not have a disability" or "prefer not to answer"
+                if "no" in ll and "disability" in ll:
                     return "true"
-                if any(k in ll for k in ("don't wish", "don't want to answer", "prefer not", "decline to", "do not want")):
+                if any(k in ll for k in ("don't wish", "don't want to answer", "prefer not", "decline to", "do not want", "i do not want")):
                     return "true"
                 return "false"
         return None
@@ -1174,6 +1236,13 @@ async def prefetch_options(page: Page, fields: list[dict]):
 
 async def smart_fill_page(page: Page, heading: str, context_hint: str = ""):
     print(f"\n  [SCAN] '{heading}'...")
+
+    # Scroll to bottom then top to trigger lazy-rendering of all form sections
+    await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+    await page.wait_for_timeout(600)
+    await page.evaluate("() => window.scrollTo(0, 0)")
+    await page.wait_for_timeout(400)
+
     fields = await page.evaluate(SCAN_JS, None)
 
     fillable = [f for f in fields if f["label"]]
@@ -1466,7 +1535,8 @@ async def fill_add_dialog(page: Page, dialog_label: str, entry: dict = None, sec
     await prefetch_options(page, fillable)
 
     if DEEPSEEK_KEY:
-        answers = await deepseek_fill_page(fillable)
+        # Pass entry context so LLM knows which specific WE/EDU/LANG entry it's filling
+        answers = await deepseek_fill_page(fillable, entry=entry, section_type=section_type)
     elif entry and section_type:
         # Use entry-specific answers
         answers = []
@@ -1563,27 +1633,7 @@ async def exec_skills_field(page: Page, field: dict, skills: list[str]):
             print(f"    ~ skill '{skill}' — no results")
             continue
 
-        # Pick: prefer exact match, then starts-with, then whole-word boundary
-        skill_l = skill.lower()
-        def score(opt):
-            o = opt.lower()
-            if o == skill_l: return 0                        # exact
-            if o.startswith(skill_l + " "): return 1         # starts with (e.g. "Python (programming language)")
-            if re.search(r'\b' + re.escape(skill_l) + r'\b', o): return 2  # whole word
-            if o.startswith(skill_l): return 3
-            return 99
-
-        best = min(results, key=score)
-        best_score = score(best)
-
-        # Reject completely unrelated matches (no word boundary or prefix match)
-        if best_score >= 99:
-            await inp.press("Escape")
-            await page.wait_for_timeout(400)
-            print(f"    ~ skill '{skill}' → no relevant match (best: {best!r}), skipping")
-            continue
-
-        # Check already-selected pills to avoid double-clicking (which deselects the pill)
+        # Get already-selected pills BEFORE picking (used by both DeepSeek and rule-based paths)
         already_pills = await page.evaluate(f"""() => {{
             const fid = '{fid}';
             const el = fid ? document.getElementById(fid) : document.querySelector('[data-fill-idx="{idx}"]');
@@ -1591,12 +1641,41 @@ async def exec_skills_field(page: Page, field: dict, skills: list[str]):
             const items = Array.from(fw?.querySelectorAll('[data-automation-id="selectedItem"]') || []);
             return items.map(e => e.innerText.trim().toLowerCase());
         }}""")
-        best_l = best.lower()
-        if already_pills and any(best_l in p or p in best_l for p in already_pills):
-            print(f"    ~ skill '{skill}' → {best!r} already selected, skipping")
-            await inp.press("Escape")
-            await page.wait_for_timeout(300)
-            continue
+
+        # Pick best match: DeepSeek if available, else rule-based scoring
+        if DEEPSEEK_KEY:
+            best = await deepseek_pick_skill(skill, results, already_pills)
+            if best is None:
+                await inp.press("Escape")
+                await page.wait_for_timeout(400)
+                print(f"    ~ skill '{skill}' → LLM said NONE / no good match, skipping")
+                continue
+            print(f"    → skill '{skill}' → LLM picked {best!r}")
+        else:
+            # Rule-based: prefer exact match, then starts-with, then whole-word boundary
+            skill_l = skill.lower()
+            def score(opt):
+                o = opt.lower()
+                if o == skill_l: return 0
+                if o.startswith(skill_l + " "): return 1
+                if re.search(r'\b' + re.escape(skill_l) + r'\b', o): return 2
+                if o.startswith(skill_l): return 3
+                return 99
+            best = min(results, key=score)
+            if score(best) >= 99:
+                await inp.press("Escape")
+                await page.wait_for_timeout(400)
+                print(f"    ~ skill '{skill}' → no relevant match (best: {best!r}), skipping")
+                continue
+            print(f"    → skill '{skill}' → rule picked {best!r}")
+
+            # Rule-based: guard against double-clicking an already-selected pill
+            best_l = best.lower()
+            if already_pills and any(best_l in p or p in best_l for p in already_pills):
+                print(f"    ~ skill '{skill}' → {best!r} already selected, skipping")
+                await inp.press("Escape")
+                await page.wait_for_timeout(300)
+                continue
 
         best_lower = best[:50].lower()
         clicked = await page.evaluate(f"""() => {{
@@ -1862,34 +1941,28 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
             ss = ARTIFACTS / f"run_{page_num:02d}_{re.sub(r'[^a-zA-Z0-9]','_',heading)[:30]}.png"
             await page.screenshot(path=str(ss))
 
+            # ── Detect page type by CONTENT, not heading text ──────────────────
+            # This makes the bot work across different Workday tenants that use
+            # different heading names ("Work History" vs "My Experience", etc.)
+            has_add_buttons  = await page.locator("[data-automation-id='add-button']").count() > 0
+            has_tc_checkbox  = await page.locator("[id*='termsAndConditions'],[data-automation-id='termsAndConditions']").count() > 0
+            # Detect by heading keywords OR known DOM ids (covers any tenant naming)
+            heading_l = heading.lower()
+            has_self_id = (
+                any(kw in heading_l for kw in ("self identify", "self-identify", "disability", "eeo", "equal employ")) or
+                await page.locator("[id*='selfIdentified'],[id*='disability'],[data-automation-id*='selfIdentif']").count() > 0
+            )
+            is_review        = "review" in heading.lower()
+            is_complete      = any(kw in heading for kw in ("My Tasks", "Thank You", "Submitted", "Complete"))
+
+            print(f"  [TYPE] add_btns={has_add_buttons} tc={has_tc_checkbox} "
+                  f"self_id={has_self_id} review={is_review}")
+
             try:
-                if "My Information" in heading:
-                    await smart_fill_page(page, heading)
-                    ok = await save_and_continue(page)
-                    if not ok:
-                        # Re-scan: validation may have revealed hidden fields (e.g. RH radio)
-                        print("  [NAV] Re-scanning for newly visible fields after validation...")
-                        await smart_fill_page(page, heading)
-                        ok = await save_and_continue(page)
-                    if not ok:
-                        print("  [NAV] Still blocked — taking screenshot and breaking")
-                        await page.screenshot(path=str(ARTIFACTS / f"blocked_{page_num:02d}.png"))
-                        break
+                if is_complete:
+                    print("[BOT] ✓ Application complete."); break
 
-                elif "My Experience" in heading:
-                    await handle_my_experience(page)
-
-                elif "Application Questions" in heading:
-                    await smart_fill_page(page, heading)
-                    await save_and_continue(page)
-
-                elif "Voluntary Disclosures" in heading:
-                    await handle_voluntary_disclosures(page)
-
-                elif "Self Identify" in heading:
-                    await handle_self_identify(page)
-
-                elif "Review" in heading:
+                elif is_review:
                     print("\n" + "="*60)
                     print("  ⚠️  REVIEW — all fields filled. Check the browser.")
                     print("="*60)
@@ -1903,10 +1976,36 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
                         print("  ⚠️  Non-interactive mode — NOT submitting. Review at /tmp/review_page.png")
                     break
 
+                elif has_add_buttons:
+                    # Experience/Education/Languages page — any tenant name
+                    print(f"  → Detected as experience/education page (add-buttons present)")
+                    await handle_my_experience(page)
+
+                elif has_tc_checkbox:
+                    # Voluntary Disclosures / T&C page — any tenant name
+                    print(f"  → Detected as voluntary disclosures page (T&C checkbox present)")
+                    await handle_voluntary_disclosures(page)
+
+                elif has_self_id:
+                    # Self Identification / EEO page — any tenant name
+                    print(f"  → Detected as self-identify page")
+                    await handle_self_identify(page)
+
                 else:
-                    print(f"  Unknown page — smart fill + advance")
+                    # Generic page (My Information, Application Questions, custom pages)
+                    # smart_fill_page + save handles all standard form-field pages
+                    print(f"  → Generic form page — smart fill")
                     await smart_fill_page(page, heading)
-                    await save_and_continue(page)
+                    ok = await save_and_continue(page)
+                    if not ok:
+                        # Validation revealed hidden fields (e.g. RH radio on My Information)
+                        print("  [NAV] Re-scanning for newly visible fields after validation...")
+                        await smart_fill_page(page, heading)
+                        ok = await save_and_continue(page)
+                    if not ok:
+                        print("  [NAV] Still blocked — taking screenshot and breaking")
+                        await page.screenshot(path=str(ARTIFACTS / f"blocked_{page_num:02d}.png"))
+                        break
 
             except Exception as e:
                 print(f"  [ERR] {e}")
