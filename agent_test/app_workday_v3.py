@@ -15,17 +15,21 @@ Architecture:
  USAGE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  # Headless (default, background-safe, no browser window):
+  # Headless (default, no browser window):
   python3 agent_test/app_workday_v3.py "JOB_URL"
 
   # Headed / displayed mode (shows Chrome window for manual review/edits):
   python3 agent_test/app_workday_v3.py "JOB_URL" --show
 
-  # Log output to file while running in background (headless):
-  python3 -u agent_test/app_workday_v3.py "JOB_URL" > /tmp/run.txt 2>&1 &
-  tail -f /tmp/run.txt        # follow live output
+  # Log to file — Mac/Linux:
+  python3 -u agent_test/app_workday_v3.py "JOB_URL" > run.txt 2>&1 &
+  tail -f run.txt
 
-  # Screenshots are saved to agent_test/artifacts/ on errors or stuck pages.
+  # Log to file — Windows (PowerShell):
+  Start-Process python -ArgumentList "-u agent_test/app_workday_v3.py `"JOB_URL`"" -RedirectStandardOutput run.txt -NoNewWindow
+  Get-Content run.txt -Wait
+
+  # Screenshots saved to agent_test/artifacts/ on errors or stuck pages.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  FLAGS
@@ -53,13 +57,55 @@ from playwright.async_api import async_playwright, Page
 SCRIPT_DIR  = Path(__file__).parent
 load_dotenv(SCRIPT_DIR / ".env")
 
-CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+# ── Chrome path: auto-detect by platform ─────────────────────────────────────
+def _find_chrome() -> str:
+    import platform
+    system = platform.system()
+    candidates = []
+    if system == "Darwin":
+        candidates = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
+    elif system == "Windows":
+        candidates = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+        ]
+    else:  # Linux
+        candidates = ["/usr/bin/google-chrome", "/usr/bin/chromium-browser",
+                      "/usr/bin/chromium", "/snap/bin/chromium"]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    # Last resort: let Playwright use its own bundled Chromium
+    return ""
+
 LIBRARY     = json.loads((SCRIPT_DIR / "library.json").read_text())
 PI          = LIBRARY["personal_info"]
 WE          = LIBRARY.get("work_experience", [])
 EDU         = LIBRARY.get("education_history", [])
 LANG        = LIBRARY.get("languages", [])
-RESUME_PATH = str(SCRIPT_DIR / "joshua_li_resume_6_2026.pdf")
+
+# Resume path: from library.json (relative to repo root) or auto-discover
+# Always resolve to absolute path — set_input_files requires absolute paths
+_resume_rel = LIBRARY.get("resume_path", "")
+if _resume_rel:
+    _rp = Path(_resume_rel) if Path(_resume_rel).is_absolute() else SCRIPT_DIR.parent / _resume_rel
+    RESUME_PATH = str(_rp.resolve())
+else:
+    _pdfs = list(SCRIPT_DIR.glob("*.pdf"))
+    RESUME_PATH = str(_pdfs[0].resolve()) if _pdfs else ""
+
+# User agent: match the actual platform so Workday renders the platform-correct version
+import platform as _plat
+_ua_os = {
+    "Darwin":  "Macintosh; Intel Mac OS X 10_15_7",
+    "Windows": "Windows NT 10.0; Win64; x64",
+    "Linux":   "X11; Linux x86_64",
+}.get(_plat.system(), "Windows NT 10.0; Win64; x64")
+USER_AGENT = (f"Mozilla/5.0 ({_ua_os}) AppleWebKit/537.36 "
+              f"(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+
+CHROME_PATH = _find_chrome()
 EMAIL       = PI["email"]
 PASSWORD    = PI["password"]
 ARTIFACTS   = SCRIPT_DIR / "artifacts"
@@ -337,8 +383,10 @@ def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
             return str(COMP.get("expected_base_salary", "120000"))
 
         # Availability / eligibility date fields (Month/Day/Year in Application Questions)
+        # Exclude Self Identify page — those month/day/year fields are signature dates
+        # already filled by handle_self_identify; returning None skips re-filling them.
         if label_match(label, "month", "day", "year") and (
-            "application" in section or not any(k in section for k in ("work","experience","education","school"))
+            "application" in section or not any(k in section for k in ("work","experience","education","school","self identify","signature"))
         ):
             import datetime
             avail = datetime.date.today() + datetime.timedelta(weeks=2)
@@ -1183,7 +1231,7 @@ async def save_and_continue(page: Page) -> bool:
     if heading_after2 != heading_before or url_after2 != url_before:
         return True
     # Still stuck — screenshot for diagnostics
-    shot = f"/tmp/stuck_{heading_before.replace(' ','_')}.png"
+    shot = str(ARTIFACTS / f"stuck_{heading_before.replace(' ','_')}.png")
     await page.screenshot(path=shot, full_page=False)
     print(f"  [NAV] screenshot: {shot}")
     # Print all visible text that looks like errors or required hints
@@ -1642,34 +1690,52 @@ async def exec_skills_field(page: Page, field: dict, skills: list[str]):
             return items.map(e => e.innerText.trim().toLowerCase());
         }}""")
 
-        # Pick best match: DeepSeek if available, else rule-based scoring
+        # Pick best match: DeepSeek if available (with rule-based fallback), else rule-based only
+        def rule_score(opt):
+            o = opt.lower()
+            skill_l = skill.lower()
+            if o == skill_l: return 0
+            if o.startswith(skill_l + " "): return 1
+            if re.search(r'\b' + re.escape(skill_l) + r'\b', o): return 2
+            if o.startswith(skill_l): return 3
+            return 99
+
         if DEEPSEEK_KEY:
             best = await deepseek_pick_skill(skill, results, already_pills)
             if best is None:
-                await inp.press("Escape")
-                await page.wait_for_timeout(400)
-                print(f"    ~ skill '{skill}' → LLM said NONE / no good match, skipping")
-                continue
-            print(f"    → skill '{skill}' → LLM picked {best!r}")
+                # DeepSeek said no match or errored — fall back to rule-based rather than skip
+                best_rule = min(results, key=rule_score)
+                if rule_score(best_rule) < 99:
+                    best = best_rule
+                    print(f"    → skill '{skill}' → LLM no match, rule fallback picked {best!r}")
+                else:
+                    await inp.press("Escape")
+                    await page.wait_for_timeout(400)
+                    print(f"    ~ skill '{skill}' → LLM + rule both no match, skipping")
+                    continue
+            else:
+                print(f"    → skill '{skill}' → LLM picked {best!r}")
+
+            # DeepSeek API took ~1-2s — dropdown may have closed; re-type to reopen it
+            await inp.click(click_count=3, force=True)
+            await inp.type(best[:30], delay=50)  # type the chosen option to filter to it
+            await page.wait_for_timeout(800)
+            # Re-read results to confirm dropdown is open with matching options
+            results = await page.evaluate(READ_JS)
+            if not results:
+                await page.wait_for_timeout(800)
+                results = await page.evaluate(READ_JS)
         else:
-            # Rule-based: prefer exact match, then starts-with, then whole-word boundary
-            skill_l = skill.lower()
-            def score(opt):
-                o = opt.lower()
-                if o == skill_l: return 0
-                if o.startswith(skill_l + " "): return 1
-                if re.search(r'\b' + re.escape(skill_l) + r'\b', o): return 2
-                if o.startswith(skill_l): return 3
-                return 99
-            best = min(results, key=score)
-            if score(best) >= 99:
+            # Rule-based only
+            best = min(results, key=rule_score)
+            if rule_score(best) >= 99:
                 await inp.press("Escape")
                 await page.wait_for_timeout(400)
                 print(f"    ~ skill '{skill}' → no relevant match (best: {best!r}), skipping")
                 continue
             print(f"    → skill '{skill}' → rule picked {best!r}")
 
-            # Rule-based: guard against double-clicking an already-selected pill
+            # Guard against double-clicking an already-selected pill (deselects it)
             best_l = best.lower()
             if already_pills and any(best_l in p or p in best_l for p in already_pills):
                 print(f"    ~ skill '{skill}' → {best!r} already selected, skipping")
@@ -1690,12 +1756,19 @@ async def exec_skills_field(page: Page, field: dict, skills: list[str]):
                     .filter(x => x.getBoundingClientRect().height > 0);
                 for (const p of poppers) {{ const o = getOpts(p); if (o.length) {{ opts = o; break; }} }}
             }}
-            const t = opts.find(e => e.innerText.trim().toLowerCase().includes('{best_lower}')) || opts[0];
+            if (!opts.length) return null;
+            // Prefer exact match on LLM-chosen text, then partial, then first
+            const exact = opts.find(e => e.innerText.trim().toLowerCase() === '{best_lower}');
+            const partial = opts.find(e => e.innerText.trim().toLowerCase().includes('{best_lower}'));
+            const t = exact || partial || opts[0];
             if (t) {{ t.dispatchEvent(new MouseEvent('mousedown',{{bubbles:true}})); t.click(); return t.innerText.trim(); }}
             return null;
         }}""")
         await page.wait_for_timeout(600)
-        print(f"    {'✓' if clicked else '~'} skill '{skill}' → {clicked or best!r} (from {results[:3]})")
+        if clicked:
+            print(f"    ✓ skill '{skill}' → clicked {clicked!r}")
+        else:
+            print(f"    ~ skill '{skill}' → dropdown closed before click (LLM={best!r})")
         # Close dropdown before next skill
         await inp.press("Escape")
         await page.wait_for_timeout(300)
@@ -1852,56 +1925,66 @@ async def handle_voluntary_disclosures(page: Page):
 async def handle_self_identify(page: Page):
     print("\n[PAGE] Self Identify")
     today = datetime.today()
+
+    # Fill name if the specific Workday Self-ID field exists
     name_el = page.locator("#selfIdentifiedDisabilityData--name").first
     if await name_el.count():
         await page.evaluate("el => el.scrollIntoView({block:'center'})", await name_el.element_handle())
         await page.wait_for_timeout(300)
         await name_el.fill(f"{PI['first_name']} {PI['last_name']}")
         print(f"    ✓ name = '{PI['first_name']} {PI['last_name']}'")
+
+    # Fill signature date (today) — use nativeInputValueSetter directly; el.fill() on
+    # React spinbuttons is unreliable (fails on Windows with "outside viewport" errors)
     for sfx, val in [("dateSectionMonth-input", str(today.month)),
                      ("dateSectionDay-input",   str(today.day)),
                      ("dateSectionYear-input",  str(today.year))]:
         full_id = f"selfIdentifiedDisabilityData--dateSignedOn-{sfx}"
-        el = page.locator(f"#{full_id}").first
-        if await el.count():
-            try:
-                # Scroll into view via JS (handles nested scrollable containers)
-                await page.evaluate(f"() => {{ const e=document.getElementById('{full_id}'); if(e) e.scrollIntoView({{block:'center'}}); }}")
-                await page.wait_for_timeout(300)
-                await el.click(force=True, timeout=5000)
-                await el.fill(val)
-                print(f"    ✓ date {sfx} = {val!r}")
-            except Exception as ex:
-                # Fallback: JS fill + dispatch events
-                await page.evaluate(f"""() => {{
-                    const e = document.getElementById('{full_id}');
-                    if (!e) return;
-                    e.focus();
-                    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
-                    nativeInputValueSetter.call(e, '{val}');
-                    e.dispatchEvent(new Event('input', {{bubbles:true}}));
-                    e.dispatchEvent(new Event('change', {{bubbles:true}}));
-                }}""")
-                print(f"    ✓ date {sfx} = {val!r} (js fallback, err={ex})")
-    await smart_fill_page(page, "Self Identify")
+        filled = await page.evaluate(f"""() => {{
+            const e = document.getElementById('{full_id}');
+            if (!e) return false;
+            e.scrollIntoView({{block:'center'}});
+            e.focus();
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+            if (setter) setter.call(e, '{val}');
+            else e.value = '{val}';
+            e.dispatchEvent(new Event('input',  {{bubbles:true}}));
+            e.dispatchEvent(new Event('change', {{bubbles:true}}));
+            return true;
+        }}""")
+        if filled:
+            print(f"    ✓ date {sfx} = {val!r}")
+
+    # smart_fill_page handles disability radio + language dropdown;
+    # pass context "self identify signature" so the month/day/year rule
+    # knows these are TODAY (signature), not an availability/start date
+    await smart_fill_page(page, "Self Identify", context_hint="self identify signature")
     await save_and_continue(page)
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
     mode = "DeepSeek" if DEEPSEEK_KEY else "rule-based fallback"
-    print(f"[BOT] Workday Application Bot — fill mode: {mode}")
-    print(f"[BOT] Job: {job_url}")
-    print(f"[BOT] Display: {'headed (visible)' if headed else 'headless (background)'}\n")
+    key_hint = f"sk-...{DEEPSEEK_KEY[-4:]}" if DEEPSEEK_KEY else "NOT SET (add DEEPSEEK_API_KEY to agent_test/.env)"
+    print(f"[BOT] Workday Application Bot")
+    print(f"[BOT] Fill mode  : {mode}")
+    print(f"[BOT] DeepSeek   : {key_hint}")
+    print(f"[BOT] Chrome     : {CHROME_PATH or '(Playwright bundled Chromium)'}")
+    print(f"[BOT] Resume     : {RESUME_PATH}")
+    print(f"[BOT] Job        : {job_url}")
+    print(f"[BOT] Display    : {'headed (visible)' if headed else 'headless (background)'}\n")
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            executable_path=CHROME_PATH, headless=not headed,
+        launch_kwargs = dict(
+            headless=not headed,
             args=["--disable-blink-features=AutomationControlled","--no-first-run",
                   "--disable-web-security","--no-sandbox"])
+        if CHROME_PATH:
+            launch_kwargs["executable_path"] = CHROME_PATH
+        browser = await pw.chromium.launch(**launch_kwargs)
         ctx = await browser.new_context(
             viewport={"width":1280,"height":900},
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+            user_agent=USER_AGENT)
         await ctx.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
         page = await ctx.new_page()
 
@@ -1966,14 +2049,15 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
                     print("\n" + "="*60)
                     print("  ⚠️  REVIEW — all fields filled. Check the browser.")
                     print("="*60)
-                    await page.screenshot(path="/tmp/review_page.png")
-                    print(f"  Screenshot saved: /tmp/review_page.png")
+                    review_shot = str(ARTIFACTS / "review_page.png")
+                    await page.screenshot(path=review_shot)
+                    print(f"  Screenshot saved: {review_shot}")
                     try:
                         await asyncio.to_thread(input, "  → Press [Enter] to submit, Ctrl+C to abort: ")
                         await save_and_continue(page)
                         print("  ✓ Submitted!")
                     except (EOFError, KeyboardInterrupt):
-                        print("  ⚠️  Non-interactive mode — NOT submitting. Review at /tmp/review_page.png")
+                        print(f"  ⚠️  Non-interactive mode — NOT submitting. Review at {review_shot}")
                     break
 
                 elif has_add_buttons:
@@ -2016,6 +2100,10 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
         await browser.close()
 
 if __name__ == "__main__":
+    # Windows requires ProactorEventLoop for Playwright subprocess communication
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
     args = sys.argv[1:]
     headed = "--show" in args
     url_args = [a for a in args if not a.startswith("--")]
