@@ -54,6 +54,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, Page
 
+# Windows: prevent UnicodeEncodeError on emoji/special chars in log output
+if sys.platform == "win32":
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
 SCRIPT_DIR  = Path(__file__).parent
 load_dotenv(SCRIPT_DIR / ".env")
 
@@ -127,6 +133,7 @@ PROFILE_SUMMARY = json.dumps({
     "languages": LIBRARY.get("languages", []),
     "role_preferences":   LIBRARY.get("role_preferences", {}),
     "compensation_rules": LIBRARY.get("compensation_rules", {}),
+    "job_listing_salary": None,   # filled at runtime after scraping the listing page
     "regulatory_self_identification": LIBRARY.get("regulatory_self_identification", {}),
     "job_board_mappings": LIBRARY.get("job_board_mappings", {}),
 }, indent=2)
@@ -141,8 +148,15 @@ Rules:
 - "First Name" / "Last Name" / "Address" / "City" / "State" / "Zip" / "Phone" → use personal_info.
 - "How did you hear" → "LinkedIn" or closest available option.
 - Visa/sponsorship → use job_board_mappings.requires_visa_sponsorship.
-- Salary/compensation → use compensation_rules.expected_base_salary.
-- EEO fields (gender, race, ethnicity, veteran, disability) → always pick "prefer not to answer" / "decline" option.
+- Salary/compensation → use job_listing_salary if set (pick the range option closest to it); otherwise use compensation_rules.baseline_target_pay.
+- EEO fields (gender, sex, race, ethnicity, hispanic/latino, veteran) → check regulatory_self_identification.primary_demographic_action:
+    * If "Decline To Self Identify" → FIRST look for an explicit "prefer not to answer"/"decline"/"I do not want to answer"/"I do not wish to disclose" option and pick it.
+      If no such option exists AND the field label says "leave blank" → pick "Select One" (leave blank).
+      If no such option exists AND the field appears required (no blank/decline available) → use fallback_gender / fallback_race / fallback_hispanic_ethnicity from the profile.
+    * If a specific identity is given → use fallback_gender / fallback_race / fallback_hispanic_ethnicity from the profile.
+  The label will often say "Leave blank if you do not wish to declare" — this means the field is optional; picking "Select One" is valid.
+- Disability → use regulatory_self_identification.disability_answer.
+- Veteran status → use regulatory_self_identification.veteran_status_selection.
 - Age 18+ / authorized to work → "Yes".
 - Non-compete / prior employment at this company → "No" unless profile says otherwise.
 - Open-ended text → concise honest answer from profile.
@@ -392,7 +406,7 @@ def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
         if label_match(label, "github", "portfolio", "website", "url"):
             return PI.get("github", "")
         if label_match(label, "salary", "compensation", "pay", "wage", "expected"):
-            return str(COMP.get("expected_base_salary", "120000"))
+            return str(COMP.get("baseline_target_pay", COMP.get("expected_base_salary", "120000")))
 
         # Availability / eligibility date fields (Month/Day/Year in Application Questions)
         # Exclude Self Identify page — those month/day/year fields are signature dates
@@ -502,7 +516,7 @@ def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
 
         # Desired compensation — match salary range option containing the target value
         if label_match(label, "compensation", "salary", "pay", "desired"):
-            comp = COMP.get("expected_base_salary", 0)
+            comp = COMP.get("baseline_target_pay", COMP.get("expected_base_salary", 0))
             try:
                 comp_n = int(str(comp).replace(",","").replace("$","").strip())
             except (ValueError, TypeError):
@@ -930,7 +944,14 @@ async def exec_button_dropdown(page: Page, field: dict, value: str):
     if match and match.lower() != 'select one':
         try:
             await page.locator(f"li[role='option']:has-text('{match[:50]}')").first.wait_for(state="visible", timeout=5000)
-            await page.locator(f"li[role='option']:has-text('{match[:50]}')").first.click()
+            # Use exact text filter to avoid "Male" matching "Female" (substring issue)
+            opt_loc = (page.locator(f"li[role='option']")
+                       .filter(has_text=re.compile(r'^\s*' + re.escape(match[:50]) + r'\s*$'))
+                       .first)
+            if not await opt_loc.count():
+                # Fallback: has-text (less precise but better than nothing)
+                opt_loc = page.locator(f"li[role='option']:has-text('{match[:50]}')").first
+            await opt_loc.click()
             print(f"    ✓ drop  [{field['index']}] {field['label']!r} = {match!r}")
         except Exception as e:
             await page.keyboard.press("Escape")
@@ -1335,7 +1356,8 @@ async def prefetch_options(page: Page, fields: list[dict]):
 
 # ── Smart page filler: DeepSeek primary, rule-based fallback ─────────────────
 
-async def smart_fill_page(page: Page, heading: str, context_hint: str = ""):
+async def smart_fill_page(page: Page, heading: str, context_hint: str = "",
+                          exclude_ids: set = None):
     print(f"\n  [SCAN] '{heading}'...")
 
     # Scroll to bottom then top to trigger lazy-rendering of all form sections
@@ -1353,6 +1375,11 @@ async def smart_fill_page(page: Page, heading: str, context_hint: str = ""):
         await page.wait_for_timeout(2000)
         fields = await page.evaluate(SCAN_JS, None)
         fillable = [f for f in fields if f["label"]]
+
+    # Remove any explicitly excluded field IDs (e.g. already-filled Self Identify date fields)
+    if exclude_ids:
+        fillable = [f for f in fillable if f.get("id") not in exclude_ids]
+
     print(f"  [SCAN] {len(fillable)} fields:")
     for f in fillable:
         print(f"    [{f['index']:2}] {f['tag']:8} {f['label']!r:45} val={f['value']!r}")
@@ -2247,13 +2274,37 @@ async def handle_self_identify(page: Page):
         if filled:
             print(f"    ✓ date {sfx} = {val!r}")
 
-    # smart_fill_page handles disability radio + language dropdown;
-    # pass context "self identify signature" so the month/day/year rule
-    # knows these are TODAY (signature), not an availability/start date
-    await smart_fill_page(page, "Self Identify", context_hint="self identify signature")
+    # smart_fill_page handles disability radio + language dropdown.
+    # The Self Identify date spinbuttons were already filled above with today's date.
+    # Exclude them from the DeepSeek scan so LLM can't overwrite them.
+    await smart_fill_page(page, "Self Identify", context_hint="self identify signature",
+                          exclude_ids={f"selfIdentifiedDisabilityData--dateSignedOn-dateSectionMonth-input",
+                                       f"selfIdentifiedDisabilityData--dateSignedOn-dateSectionDay-input",
+                                       f"selfIdentifiedDisabilityData--dateSignedOn-dateSectionYear-input"})
     await save_and_continue(page)
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+
+async def _scrape_listing_salary(page: Page) -> str | None:
+    """Extract the salary/compensation range from the job listing page text.
+    Returns a target integer (midpoint) as string, or None if not found."""
+    text = await page.evaluate("() => document.body.innerText")
+    # Match patterns like "$68,000.00 - $102,000.00" or "$75,000 - $110,000"
+    m = re.search(r'\$([\d,]+(?:\.\d+)?)\s*[-–—]\s*\$([\d,]+(?:\.\d+)?)', text)
+    if m:
+        lo = int(float(m.group(1).replace(",","")))
+        hi = int(float(m.group(2).replace(",","")))
+        midpoint = (lo + hi) // 2
+        print(f"[NAV] Listing salary: ${lo:,} - ${hi:,} → midpoint ${midpoint:,}")
+        return str(midpoint)
+    # Also try "75000 to 110000" patterns
+    m = re.search(r'([\d,]+)\s*(?:to)\s*([\d,]+)\s*(?:per year|annually|/yr)', text, re.IGNORECASE)
+    if m:
+        lo = int(m.group(1).replace(",",""))
+        hi = int(m.group(2).replace(",",""))
+        midpoint = (lo + hi) // 2
+        return str(midpoint)
+    return None
 
 async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
     mode = "DeepSeek" if DEEPSEEK_KEY else "rule-based fallback"
@@ -2283,6 +2334,21 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
         print("[NAV] Loading job listing...")
         await page.goto(job_url, wait_until="domcontentloaded", timeout=30000)
         await page.wait_for_timeout(3000)
+
+        # Scrape salary range from the listing page and inject into PROFILE_SUMMARY
+        # so DeepSeek can pick the right compensation range option in Application Questions
+        listing_salary = await _scrape_listing_salary(page)
+        if listing_salary:
+            print(f"[NAV] Using listing salary midpoint: ${int(listing_salary):,}")
+        else:
+            listing_salary = str(LIBRARY.get("compensation_rules", {}).get("baseline_target_pay", "140000"))
+            print(f"[NAV] No salary range found in listing — using baseline: {listing_salary}")
+        # Update the global PROFILE_SUMMARY with the extracted salary midpoint
+        import sys as _sys
+        _mod = _sys.modules[__name__]
+        _profile_data = json.loads(_mod.PROFILE_SUMMARY)
+        _profile_data["job_listing_salary"] = int(listing_salary)
+        _mod.PROFILE_SUMMARY = json.dumps(_profile_data, indent=2)
 
         # Wait up to 60s for the Apply button (headed mode may show sign-in overlay)
         try:
