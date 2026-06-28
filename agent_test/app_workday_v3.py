@@ -1302,13 +1302,14 @@ async def save_and_continue(page: Page) -> bool:
     print(f"  [NAV] heading: {heading_before!r} → {heading_after!r} | url changed: {url_before != url_after}")
     if heading_after != heading_before or url_after != url_before:
         return True
-    # Same heading/url — wait a bit more and take screenshot for diagnostics
-    await page.wait_for_timeout(2500)
-    heading_after2 = await get_heading(page)
-    url_after2 = page.url
-    print(f"  [NAV] (retry) heading: {heading_after2!r} | url changed: {url_before != url_after2}")
-    if heading_after2 != heading_before or url_after2 != url_before:
-        return True
+    # Same heading/url — Windows/slow network: wait longer and retry twice more
+    for _wait in (3000, 4000):
+        await page.wait_for_timeout(_wait)
+        heading_after2 = await get_heading(page)
+        url_after2 = page.url
+        print(f"  [NAV] (retry) heading: {heading_after2!r} | url changed: {url_before != url_after2}")
+        if heading_after2 != heading_before or url_after2 != url_before:
+            return True
     # Still stuck — screenshot for diagnostics
     shot = str(ARTIFACTS / f"stuck_{heading_before.replace(' ','_')}.png")
     await page.screenshot(path=shot, full_page=False)
@@ -1768,11 +1769,52 @@ async def fill_add_dialog(page: Page, dialog_label: str, entry: dict = None, sec
 
 # ── My Experience handler ─────────────────────────────────────────────────────
 
+PILLS_JS = """(args) => {
+    const {fid, idx} = args;
+    const el = fid ? document.getElementById(fid) : document.querySelector('[data-fill-idx="' + idx + '"]');
+    const fw = el?.closest('[data-automation-id^="formField"]') || el?.parentElement;
+    const items = Array.from(fw?.querySelectorAll('[data-automation-id="selectedItem"]') || []);
+    // Also scan any tags/multiselect containers that might be outside the formField
+    const global = Array.from(document.querySelectorAll('[data-automation-id="selectedItem"]'));
+    const all = [...new Set([...items, ...global])];
+    return all.map(e => e.innerText.trim().toLowerCase()).filter(Boolean);
+}"""
+
 async def exec_skills_field(page: Page, field: dict, skills: list[str]):
     """Fill a skills selectinput: for each skill, type → Enter → pick best match.
-    Checks already-selected pills before clicking to avoid accidental deselection."""
+    Fetches ALL currently-selected pills once at start (handles draft data from previous runs),
+    then keeps the set updated as new skills are successfully added."""
     fid = field.get('id', '')
     idx = field['index']
+
+    # Fetch complete current pill set ONCE before iterating.
+    # This catches server-persisted draft skills that are already rendered.
+    current_pills: set[str] = set(await page.evaluate(PILLS_JS, {"fid": fid, "idx": idx}))
+    if current_pills:
+        print(f"    [SKILLS] {len(current_pills)} already-selected pills found: {sorted(current_pills)[:8]}{'...' if len(current_pills)>8 else ''}")
+
+    def is_already_selected(name: str) -> bool:
+        """Fuzzy check if skill name matches any already-selected pill.
+        Uses word-boundary regex. Short names (< 3 chars) only exact-match to avoid
+        false positives like 'C' matching 'C++ Programming Language'."""
+        n = name.lower().strip()
+        for p in current_pills:
+            if n == p:
+                return True
+            # Only do substring checks for names long enough to be unambiguous
+            if len(n) < 3:
+                continue
+            try:
+                # skill name as whole word(s) within pill text
+                if re.search(r'(?<![a-zA-Z0-9])' + re.escape(n) + r'(?![a-zA-Z0-9])', p):
+                    return True
+                # pill text as whole word(s) within skill name
+                if len(p) >= 3 and re.search(r'(?<![a-zA-Z0-9])' + re.escape(p) + r'(?![a-zA-Z0-9])', n):
+                    return True
+            except re.error:
+                pass
+        return False
+
     for skill in skills:
         if fid:
             inp = page.locator(f"input#{fid}").first
@@ -1784,21 +1826,8 @@ async def exec_skills_field(page: Page, field: dict, skills: list[str]):
         except Exception:
             pass
 
-        # Check already-selected pills BEFORE typing to avoid unnecessary searches
-        # (server pre-populates draft data from previous runs).
-        # Use fuzzy match: pill text may differ from skill name (e.g. "C++ Programming Language" vs "C++ Programming")
-        already_pills = await page.evaluate(f"""() => {{
-            const fid = '{fid}';
-            const el = fid ? document.getElementById(fid) : document.querySelector('[data-fill-idx="{idx}"]');
-            const fw = el?.closest('[data-automation-id^="formField"]') || el?.parentElement;
-            const items = Array.from(fw?.querySelectorAll('[data-automation-id="selectedItem"]') || []);
-            return items.map(e => e.innerText.trim().toLowerCase());
-        }}""")
-        skill_l = skill.lower()
-        if already_pills and any(
-            skill_l == p or skill_l in p or p in skill_l
-            for p in already_pills
-        ):
+        # Check already-selected pills before typing (uses pre-fetched set + fuzzy match)
+        if is_already_selected(skill):
             print(f"    ~ skill '{skill}' → already selected (pre-check), skipping")
             continue
 
@@ -1846,7 +1875,7 @@ async def exec_skills_field(page: Page, field: dict, skills: list[str]):
             return 99
 
         if DEEPSEEK_KEY:
-            best = await deepseek_pick_skill(skill, results, already_pills)
+            best = await deepseek_pick_skill(skill, results, list(current_pills))
             if best is None:
                 # DeepSeek said no match or errored — fall back to rule-based rather than skip
                 best_rule = min(results, key=rule_score)
@@ -1860,9 +1889,8 @@ async def exec_skills_field(page: Page, field: dict, skills: list[str]):
                     continue
             else:
                 print(f"    → skill '{skill}' → LLM picked {best!r}")
-            # Guard against double-clicking an already-selected pill (same as rule-based path)
-            best_l = best.lower()
-            if already_pills and best_l in already_pills:
+            # Guard against double-clicking an already-selected pill (uses fuzzy match like pre-check)
+            if is_already_selected(best):
                 print(f"    ~ skill '{skill}' → {best!r} already selected, skipping")
                 await inp.press("Escape")
                 await page.wait_for_timeout(300)
@@ -1878,9 +1906,7 @@ async def exec_skills_field(page: Page, field: dict, skills: list[str]):
             print(f"    → skill '{skill}' → rule picked {best!r}")
 
             # Guard against double-clicking an already-selected pill (deselects it)
-            # Use exact match only — substring checks cause false positives (e.g. "SQL" matching "MySQL")
-            best_l = best.lower()
-            if already_pills and best_l in already_pills:
+            if is_already_selected(best):
                 print(f"    ~ skill '{skill}' → {best!r} already selected, skipping")
                 await inp.press("Escape")
                 await page.wait_for_timeout(300)
@@ -1922,6 +1948,7 @@ async def exec_skills_field(page: Page, field: dict, skills: list[str]):
             await opt_loc.click(timeout=3000)
             await page.wait_for_timeout(600)
             print(f"    ✓ skill '{skill}' → clicked {best!r}")
+            current_pills.add(best.lower())  # track so next skill can see this as already added
         except Exception as e:
             # Fallback: JS click if Playwright locator fails
             clicked = await page.evaluate(f"""() => {{
@@ -1936,6 +1963,7 @@ async def exec_skills_field(page: Page, field: dict, skills: list[str]):
             await page.wait_for_timeout(600)
             if clicked:
                 print(f"    ✓ skill '{skill}' → clicked {clicked!r} (JS fallback)")
+                current_pills.add(clicked.lower())
             else:
                 print(f"    ~ skill '{skill}' → click failed ({e})")
         # Close dropdown before next skill
@@ -2151,7 +2179,7 @@ async def handle_my_experience(page: Page):
         print(f"  [ERR] handle_my_experience: save failed after 3 attempts — stopping")
     return saved
 
-async def handle_voluntary_disclosures(page: Page):
+async def handle_voluntary_disclosures(page: Page) -> bool:
     # First pass — fill all visible fields
     await smart_fill_page(page, "Voluntary Disclosures")
 
@@ -2247,11 +2275,16 @@ async def handle_voluntary_disclosures(page: Page):
         print(f"    {'✓' if tc_checked else '~'} T&C checked (verified={tc_checked})")
     else:
         print(f"    ✓ T&C already checked")
-    await save_and_continue(page)
+    ok = await save_and_continue(page)
+    if not ok:
+        current = await get_heading(page)
+        if current and current != "Voluntary Disclosures":
+            ok = True
+    return ok
 
 # ── Self Identify handler ─────────────────────────────────────────────────────
 
-async def handle_self_identify(page: Page):
+async def handle_self_identify(page: Page) -> bool:
     print("\n[PAGE] Self Identify")
     today = datetime.today()
 
@@ -2291,7 +2324,12 @@ async def handle_self_identify(page: Page):
                           exclude_ids={f"selfIdentifiedDisabilityData--dateSignedOn-dateSectionMonth-input",
                                        f"selfIdentifiedDisabilityData--dateSignedOn-dateSectionDay-input",
                                        f"selfIdentifiedDisabilityData--dateSignedOn-dateSectionYear-input"})
-    await save_and_continue(page)
+    ok = await save_and_continue(page)
+    if not ok:
+        current = await get_heading(page)
+        if current and current != "Self Identify":
+            ok = True
+    return ok
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -2465,12 +2503,20 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
                 elif has_tc_checkbox:
                     # Voluntary Disclosures / T&C page — any tenant name
                     print(f"  → Detected as voluntary disclosures page (T&C checkbox present)")
-                    await handle_voluntary_disclosures(page)
+                    ok = await handle_voluntary_disclosures(page)
+                    if not ok:
+                        current = await get_heading(page)
+                        if current and current == "Voluntary Disclosures":
+                            print(f"  [NAV] Voluntary Disclosures save may have failed — continuing anyway")
 
                 elif has_self_id:
                     # Self Identification / EEO page — any tenant name
                     print(f"  → Detected as self-identify page")
-                    await handle_self_identify(page)
+                    ok = await handle_self_identify(page)
+                    if not ok:
+                        current = await get_heading(page)
+                        if current and current == "Self Identify":
+                            print(f"  [NAV] Self Identify save may have failed — continuing anyway")
 
                 else:
                     # Generic page (My Information, Application Questions, custom pages)
