@@ -16,15 +16,19 @@ from pydantic import BaseModel, Field
 
 # Force UTF-8 encoding on standard output/error
 if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
+else:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
 # Load environment variables from .env file
 env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
 DB_PATH = Path(__file__).parent / "jobs.db"
-PROFILE_PATH = Path(__file__).parent / "resume_profile.json"
+PROFILE_PATH = Path(__file__).parent / "library.json"  # candidate profile (library.json)
 README_URL = "https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/README.md"
 
 # --- 1. Structured Output Schema Definitions ---
@@ -439,9 +443,29 @@ async def fetch_job_description(apply_url):
         except Exception as e:
             print(f"[!] Warning: iCIMS requests fetch failed for {apply_url} - {e}")
 
-    # Fall back to Playwright
+    # Fall back to Playwright with system Chrome
+    import platform
+    system = platform.system()
+    chrome_candidates = []
+    if system == "Darwin":
+        chrome_candidates = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
+    elif system == "Windows":
+        chrome_candidates = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ]
+    else:
+        chrome_candidates = ["/usr/bin/google-chrome", "/usr/bin/chromium-browser", "/usr/bin/chromium"]
+    chrome_path = next((p for p in chrome_candidates if os.path.exists(p)), "")
+
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        launch_kwargs = dict(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+        )
+        if chrome_path:
+            launch_kwargs["executable_path"] = chrome_path
+        browser = await p.chromium.launch(**launch_kwargs)
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={"width": 1280, "height": 800}
@@ -674,7 +698,9 @@ def run_ingest():
     
     print("[*] Fetching latest jobs list from Simplify repository...")
     try:
-        resp = requests.get(README_URL, timeout=15)
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        resp = requests.get(README_URL, timeout=15, verify=False)
         resp.raise_for_status()
         content = resp.text
     except Exception as e:
@@ -743,20 +769,35 @@ def run_ingest():
     print(f"    - Marked {removed_count} jobs as closed/inactive (removed from Simplify list).")
     export_db_to_csv()
 
-async def run_evaluate(limit=10):
-    """Fetch and evaluate pending jobs in the database."""
-    api_key = os.getenv("DEEPSEEK_API_KEY")
-    if not api_key:
-        print("[ERROR] No DEEPSEEK_API_KEY found. Check .env file.")
-        return
+async def run_evaluate(limit=10, dry_run=False):
+    """Fetch and evaluate pending jobs in the database.
+    If dry_run=True, scrapes job descriptions but skips LLM evaluation (validates scraping pipeline)."""
+    if dry_run:
+        print("[DRY-RUN] Scraping job descriptions only — DeepSeek LLM calls SKIPPED.")
+    else:
+        api_key = os.getenv("DEEPSEEK_API_KEY")
+        if not api_key:
+            print("[ERROR] No DEEPSEEK_API_KEY found. Check .env file.")
+            return
         
     if not PROFILE_PATH.exists():
-        print(f"[ERROR] Structured profile not found at {PROFILE_PATH}. Run resume creation first.")
+        print(f"[ERROR] Candidate profile not found at {PROFILE_PATH}.")
         return
         
     with open(PROFILE_PATH, "r", encoding="utf-8") as f:
         profile_data = json.load(f)
-        
+
+    if not dry_run:
+        llm = ChatOpenAI(
+            model="deepseek-chat",
+            api_key=api_key,
+            base_url="https://api.deepseek.com/v1",
+            temperature=0.0,
+            extra_body={"thinking": {"type": "disabled"}}
+        )
+    else:
+        llm = None
+    
     conn = sqlite3.connect(DB_PATH)
     
     # Run cleanup first to filter out non-US/Canada and reset errored/failed
@@ -782,18 +823,12 @@ async def run_evaluate(limit=10):
         conn.close()
         return
         
-    print(f"[*] Starting evaluation for {len(pending_jobs)} pending jobs...")
+    print(f"[*] Starting {'dry-run scrape' if dry_run else 'evaluation'} for {len(pending_jobs)} pending jobs...")
     
-    llm = ChatOpenAI(
-        model="deepseek-v4-flash",
-        api_key=api_key,
-        base_url="https://api.deepseek.com/v1",
-        temperature=0.0,
-        extra_body={"thinking": {"type": "disabled"}}
-    )
-    
+    dry_run_ok = 0
+    dry_run_fail = 0
     for job_id, company, role, location, apply_url in pending_jobs:
-        print(f"\n[*] Evaluating: {company} - {role}...")
+        print(f"\n[*] {'Scraping' if dry_run else 'Evaluating'}: {company} - {role}...")
         print(f"    Location: {location}")
         print(f"    Link: {apply_url}")
         
@@ -806,29 +841,44 @@ async def run_evaluate(limit=10):
                     "page not found", "job not found", "job is no longer available", 
                     "no longer accepting applications", "this job is closed", 
                     "the page you are looking for doesn't exist", "link you followed may be broken",
-                    "couldn't find that page", "couldn’t find that page", "could not find that page"
+                    "couldn't find that page", "couldn't find that page", "could not find that page"
                 ]
                 if any(term in desc_lower for term in expired_indicators):
                     is_expired = True
                     
             if is_expired:
                 print("    [+] Expired listing detected. Marking as Closed (Expired).")
-                cursor.execute("""
-                    UPDATE jobs 
-                    SET status = 'Closed (Expired)', score = 3, job_description = ?
-                    WHERE id = ?
-                """, (job_desc, job_id))
+                if not dry_run:
+                    cursor.execute("""
+                        UPDATE jobs 
+                        SET status = 'Closed (Expired)', score = 3, job_description = ?
+                        WHERE id = ?
+                    """, (job_desc, job_id))
+                    conn.commit()
             else:
-                print("    [!] Fetch failed or too short. Marking for manual review.")
-                cursor.execute("""
-                    UPDATE jobs 
-                    SET status = 'Fetch Failed / Manual Review' 
-                    WHERE id = ?
-                """, (job_id,))
-            conn.commit()
+                print("    [!] Fetch failed or too short.")
+                if dry_run:
+                    dry_run_fail += 1
+                else:
+                    cursor.execute("""
+                        UPDATE jobs 
+                        SET status = 'Fetch Failed / Manual Review' 
+                        WHERE id = ?
+                    """, (job_id,))
+                    conn.commit()
             continue
             
-        print(f"    [+] Successfully fetched description ({len(job_desc)} chars). Evaluating...")
+        print(f"    [+] Successfully fetched description ({len(job_desc)} chars).")
+        
+        if dry_run:
+            # Just preview — no LLM call
+            dry_run_ok += 1
+            preview = job_desc[:400].replace('\n', ' ')
+            print(f"    [PREVIEW] {preview}...")
+            print(f"    [DRY-RUN] ✓ Scrape OK — DeepSeek would receive {len(job_desc)} chars of context.")
+            continue
+
+        print(f"    Evaluating with DeepSeek...")
         try:
             eval_result = await evaluate_job_with_llm(llm, profile_data, job_desc)
             
@@ -878,8 +928,12 @@ async def run_evaluate(limit=10):
             conn.commit()
             
     conn.close()
-    print("\n[+] Evaluation loop complete.")
-    export_db_to_csv()
+    if dry_run:
+        print(f"\n[DRY-RUN] Done. Scraped OK: {dry_run_ok}, Failed: {dry_run_fail}")
+        print(f"[DRY-RUN] Pipeline validated — run without --dry-run on Windows with DEEPSEEK_API_KEY to evaluate.")
+    else:
+        print("\n[+] Evaluation loop complete.")
+        export_db_to_csv()
 
 def show_status():
     """Display count metrics for jobs stored in the database."""
@@ -950,6 +1004,15 @@ def mark_applied(job_id):
     print(f"[+] Successfully marked {job[0]} - {job[1]} as 'Applied'.")
     export_db_to_csv()
 
+def detect_applicator(url: str) -> str | None:
+    """Return the applicator script path for a given job URL, or None if unsupported."""
+    base = Path(__file__).parent
+    if "myworkdayjobs.com" in url or "workday.com" in url:
+        return str(base / "app_workday_v3.py")
+    # Add more handlers here as they are built:
+    # if "greenhouse.io" in url: return str(base / "app_greenhouse.py")
+    return None
+
 def run_apply_loop():
     """Loop through high priority eligible jobs from highest score to lowest and launch the applicator."""
     conn = sqlite3.connect(DB_PATH)
@@ -980,6 +1043,12 @@ def run_apply_loop():
         print(f"[{idx+1}/{len(jobs)}] Job ID {job_id}: {company} - {role}")
         print(f"      Location: {location} | Priority Score: {score} | Fit: {fit}%")
         print(f"      Link: {url}")
+        
+        app_script = detect_applicator(url)
+        if app_script:
+            print(f"      Applicator: {Path(app_script).name}")
+        else:
+            print(f"      [~] No supported applicator for this URL — skipping.")
         print("="*80)
         
         choice = input("Do you want to launch the applicator for this job? [Y/n/skip/exit]: ").strip().lower()
@@ -989,12 +1058,15 @@ def run_apply_loop():
         elif choice in ('n', 'no', 'skip'):
             print(f"[*] Skipping {company} - {role}.")
             continue
+        
+        if not app_script:
+            print(f"[*] No applicator available — skipping.")
+            continue
             
         print(f"[*] Launching applicator for {company} - {role}...")
-        app_path = Path(__file__).parent / "app.py"
         try:
             # We run it synchronously so it blocks this loop until the user closes or finishes the applicator session
-            subprocess.run([sys.executable, str(app_path), url], check=True)
+            subprocess.run([sys.executable, app_script, url], check=True)
             print(f"[+] Finished session for {company} - {role}.")
         except Exception as e:
             print(f"[!] Error running applicator: {e}")
@@ -1083,6 +1155,7 @@ def main():
     parser.add_argument("--limit", type=int, default=10, help="Number of pending jobs to evaluate. Set to -1 to evaluate all pending. (default 10)")
     parser.add_argument("--priority", type=int, default=1, choices=[1, 2, 3], help="Priority level to list (default 1)")
     parser.add_argument("--id", type=int, help="Job ID to mark as applied")
+    parser.add_argument("--dry-run", action="store_true", help="For 'evaluate': scrape job descriptions only, skip DeepSeek LLM calls (validates pipeline)")
     
     args = parser.parse_args()
     
@@ -1100,7 +1173,7 @@ def main():
         if args.action == "ingest":
             run_ingest()
         elif args.action == "evaluate":
-            asyncio.run(run_evaluate(limit=args.limit))
+            asyncio.run(run_evaluate(limit=args.limit, dry_run=args.dry_run))
         elif args.action == "status":
             show_status()
         elif args.action == "list":
@@ -1115,8 +1188,8 @@ def main():
         elif args.action == "csv":
             export_db_to_csv()
     finally:
-        # Export back to CSV if we ran an action that could modify or display the DB (excluding apply-loop to avoid overwrites)
-        if args.action in ("ingest", "evaluate", "apply", "csv", "status"):
+        # Export back to CSV if we ran an action that could modify or display the DB (excluding apply-loop and dry-run)
+        if args.action in ("ingest", "apply", "csv", "status") or (args.action == "evaluate" and not args.dry_run):
             export_db_to_csv()
             
         # Clean up database file so it doesn't persist on disk
