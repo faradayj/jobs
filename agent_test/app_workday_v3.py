@@ -55,10 +55,15 @@ from dotenv import load_dotenv
 from playwright.async_api import async_playwright, Page
 
 # Windows: prevent UnicodeEncodeError on emoji/special chars in log output
+# and enable line buffering so logs appear in real-time instead of at exit
 if sys.platform == "win32":
     import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
+else:
+    # Also force line buffering on Mac/Linux when piped (python -u flag helps but not always)
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
 
 SCRIPT_DIR  = Path(__file__).parent
 load_dotenv(SCRIPT_DIR / ".env")
@@ -1780,7 +1785,8 @@ async def exec_skills_field(page: Page, field: dict, skills: list[str]):
             pass
 
         # Check already-selected pills BEFORE typing to avoid unnecessary searches
-        # (server pre-populates draft data from previous runs)
+        # (server pre-populates draft data from previous runs).
+        # Use fuzzy match: pill text may differ from skill name (e.g. "C++ Programming Language" vs "C++ Programming")
         already_pills = await page.evaluate(f"""() => {{
             const fid = '{fid}';
             const el = fid ? document.getElementById(fid) : document.querySelector('[data-fill-idx="{idx}"]');
@@ -1788,7 +1794,11 @@ async def exec_skills_field(page: Page, field: dict, skills: list[str]):
             const items = Array.from(fw?.querySelectorAll('[data-automation-id="selectedItem"]') || []);
             return items.map(e => e.innerText.trim().toLowerCase());
         }}""")
-        if already_pills and skill.lower() in already_pills:
+        skill_l = skill.lower()
+        if already_pills and any(
+            skill_l == p or skill_l in p or p in skill_l
+            for p in already_pills
+        ):
             print(f"    ~ skill '{skill}' → already selected (pre-check), skipping")
             continue
 
