@@ -11,8 +11,6 @@ import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
-from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, Field
 
 # Force UTF-8 encoding on standard output/error
 if sys.platform == "win32":
@@ -31,19 +29,21 @@ DB_PATH = Path(__file__).parent / "jobs.db"
 PROFILE_PATH = Path(__file__).parent / "library.json"  # candidate profile (library.json)
 README_URL = "https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/README.md"
 
-# --- 1. Structured Output Schema Definitions ---
+# --- 1. Data Classes ---
 
-class JobMatchMetrics(BaseModel):
-    overall_fit_percentage: float = Field(description="Percentage score of overall fit (0 to 100).")
-    confidence_score: float = Field(description="Confidence score in the evaluation (0 to 100).")
+class JobMatchMetrics:
+    def __init__(self, overall_fit_percentage: float, confidence_score: float):
+        self.overall_fit_percentage = overall_fit_percentage
+        self.confidence_score = confidence_score
 
-class JobEvaluation(BaseModel):
-    score: int = Field(description="Priority score: 1 (High priority: matches multiple skills, good experience level), 2 (Medium priority: major/experience matches but some skills missing), 3 (Low priority/Ineligible: requires PhD, 4+ years experience, or major unrelated).")
-    suitability_reason: str = Field(description="Detailed reason explaining the score, referencing the job requirements (degree, years of experience, key skills) and how they align or gap with the candidate.")
-    match_metrics: JobMatchMetrics = Field(description="Match metrics including overall fit percentage and confidence.")
-    core_alignments: list[str] = Field(description="List of job requirements that cleanly intersect with the candidate's verified experience parameters.")
-    technical_gaps: list[str] = Field(description="List of critical technologies or platforms explicitly missing from the candidate's profile.")
-    vulnerability_analysis: str = Field(description="Concise technical reasoning defining where the candidate might struggle during a hands-on live coding or system design interview for this specific role.")
+class JobEvaluation:
+    def __init__(self, score, suitability_reason, match_metrics, core_alignments, technical_gaps, vulnerability_analysis):
+        self.score = score
+        self.suitability_reason = suitability_reason
+        self.match_metrics = match_metrics
+        self.core_alignments = core_alignments
+        self.technical_gaps = technical_gaps
+        self.vulnerability_analysis = vulnerability_analysis
 
 # --- 2. Database Helpers ---
 
@@ -524,71 +524,57 @@ async def fetch_job_description(apply_url):
         finally:
             await browser.close()
 
-async def evaluate_job_with_llm(llm, profile_data, job_description):
-    """Evaluate candidate profile fit against scraped job description text."""
-    system_prompt = f"""
-    You are an expert technical recruiter and static code analysis assistant. Your task is to evaluate a raw Job Description against a Candidate Library Profile.
+async def evaluate_job_with_llm(api_key: str, profile_data: dict, job_description: str) -> JobEvaluation:
+    """Evaluate candidate profile fit against scraped job description text using DeepSeek directly."""
+    system_prompt = f"""You are an expert technical recruiter. Evaluate a Job Description against the Candidate Profile below.
 
-    Candidate Profile:
-    {json.dumps(profile_data, indent=2)}
+Candidate Profile:
+{json.dumps(profile_data, indent=2)}
 
-    Scoring Criteria:
-    Score the role on a scale of 1, 2, or 3:
-    - **Score 1 (High Priority / Strong Match)**:
-      - The job matches the candidate's target titles (Software Engineer, Data Scientist, Machine Learning Engineer, Data Engineer).
-      - The candidate meets all hard requirements (degree level is Master's or lower, major aligns with CS/Data Science).
-      - The experience required is 0-3 years (entry-level, university grad, junior developer).
-      - The candidate possesses multiple technical skills, frameworks, or database technologies mentioned in the job description.
-    - **Score 2 (Medium Priority / Potential Match)**:
-      - The candidate's major and general experience aligns well.
-      - The role is suitable, but the candidate is missing some non-critical skills/frameworks specified in the listing (e.g. requires React or AWS, which the candidate has basic exposure to, but lacks depth in).
-    - **Score 3 (Low Priority / Ineligible)**:
-      - The job requires a PhD, Doctorate, MBA, or terminal degree that the candidate does not have.
-      - The job requires 4+ years of professional full-time industry experience (excluding internships/Master's projects).
-      - The candidate's background/major is entirely unrelated.
+Scoring Criteria — score 1, 2, or 3:
+- Score 1 (High Priority / Strong Match): target titles (SWE/DS/MLE/DE), degree ≤ Master's in CS/DS, 0-3 yrs experience, multiple skill matches.
+- Score 2 (Medium Priority): major/experience aligns but missing some non-critical skills.
+- Score 3 (Low Priority / Ineligible): requires PhD, 4+ yrs full-time experience, or unrelated background.
 
-    Output Format:
-    You MUST output structured JSON matching this schema. Do not output anything other than a valid JSON object.
-    {{
-      "score": 1,
-      "suitability_reason": "Provide a detailed reasoning of why this score was assigned, referencing specific requirements in the description.",
-      "match_metrics": {{
-        "overall_fit_percentage": 85,
-        "confidence_score": 90
-      }},
-      "core_alignments": [
-        "List of requirements that intersect with candidate's experience"
-      ],
-      "technical_gaps": [
-        "List of critical technologies/platforms missing from candidate's profile"
-      ],
-      "vulnerability_analysis": "Technical reasoning of where candidate might struggle in coding or system design interviews for this role."
-    }}
-    """
-    prompt = f"Job Description Text:\n{job_description}"
-    
-    # Use JSON mode instead of structured outputs to avoid parsing issues with DeepSeek on LangChain
-    llm_json = llm.bind(response_format={"type": "json_object"})
-    response = await llm_json.ainvoke([("system", system_prompt), ("human", prompt)])
-    
-    content = response.content.strip()
-    if content.startswith("```json"):
-        content = content[7:]
-    if content.endswith("```"):
-        content = content[:-3]
+Output ONLY a valid JSON object — no markdown, no commentary:
+{{
+  "score": 1,
+  "suitability_reason": "Detailed reasoning referencing specific requirements.",
+  "match_metrics": {{"overall_fit_percentage": 85, "confidence_score": 90}},
+  "core_alignments": ["requirement that matches candidate experience"],
+  "technical_gaps": ["critical technology missing from candidate profile"],
+  "vulnerability_analysis": "Where candidate might struggle in coding/system design interview."
+}}"""
+
+    import httpx
+    async with httpx.AsyncClient(timeout=45) as client:
+        r = await client.post(
+            "https://api.deepseek.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": "deepseek-chat",
+                "temperature": 0.0,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Job Description:\n{job_description}"}
+                ],
+                "response_format": {"type": "json_object"}
+            }
+        )
+        r.raise_for_status()
+        content = r.json()["choices"][0]["message"]["content"].strip()
+
+    # Strip markdown fences if present
+    if content.startswith("```"):
+        content = re.sub(r"^```[a-z]*\n?", "", content)
+        content = re.sub(r"\n?```$", "", content)
     content = content.strip()
-    
+
     data = json.loads(content)
-    
-    match_metrics_data = data.get("match_metrics", {})
-    if not isinstance(match_metrics_data, dict):
-        match_metrics_data = {}
-        
-    metrics = JobMatchMetrics(
-        overall_fit_percentage=float(match_metrics_data.get("overall_fit_percentage", 0)),
-        confidence_score=float(match_metrics_data.get("confidence_score", 0))
-    )
-    
+    mm = data.get("match_metrics", {})
+    if not isinstance(mm, dict):
+        mm = {}
+
     score_val = data.get("score", 3)
     try:
         score_val = int(score_val)
@@ -596,11 +582,14 @@ async def evaluate_job_with_llm(llm, profile_data, job_description):
             score_val = 3
     except Exception:
         score_val = 3
-        
+
     return JobEvaluation(
         score=score_val,
         suitability_reason=str(data.get("suitability_reason", "No reason provided.")),
-        match_metrics=metrics,
+        match_metrics=JobMatchMetrics(
+            overall_fit_percentage=float(mm.get("overall_fit_percentage", 0)),
+            confidence_score=float(mm.get("confidence_score", 0))
+        ),
         core_alignments=list(data.get("core_alignments", [])),
         technical_gaps=list(data.get("technical_gaps", [])),
         vulnerability_analysis=str(data.get("vulnerability_analysis", ""))
@@ -788,15 +777,12 @@ async def run_evaluate(limit=10, dry_run=False):
         profile_data = json.load(f)
 
     if not dry_run:
-        llm = ChatOpenAI(
-            model="deepseek-chat",
-            api_key=api_key,
-            base_url="https://api.deepseek.com/v1",
-            temperature=0.0,
-            extra_body={"thinking": {"type": "disabled"}}
-        )
+        api_key = os.getenv("DEEPSEEK_API_KEY")
+        if not api_key:
+            print("[ERROR] No DEEPSEEK_API_KEY found. Check .env file.")
+            return
     else:
-        llm = None
+        api_key = None
     
     conn = sqlite3.connect(DB_PATH)
     
@@ -880,7 +866,7 @@ async def run_evaluate(limit=10, dry_run=False):
 
         print(f"    Evaluating with DeepSeek...")
         try:
-            eval_result = await evaluate_job_with_llm(llm, profile_data, job_desc)
+            eval_result = await evaluate_job_with_llm(api_key, profile_data, job_desc)
             
             # If the job is outside the US or Canada, force status to Ineligible (Non-US/Canada) and score to 3
             if not is_us_or_canada(location):
