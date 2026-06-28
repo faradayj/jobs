@@ -15,21 +15,17 @@ Architecture:
  USAGE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  # Headless (default, no browser window):
+  # Headless (default, background-safe, no browser window):
   python3 agent_test/app_workday_v3.py "JOB_URL"
 
   # Headed / displayed mode (shows Chrome window for manual review/edits):
   python3 agent_test/app_workday_v3.py "JOB_URL" --show
 
-  # Log to file — Mac/Linux:
-  python3 -u agent_test/app_workday_v3.py "JOB_URL" > run.txt 2>&1 &
-  tail -f run.txt
+  # Log output to file while running in background (headless):
+  python3 -u agent_test/app_workday_v3.py "JOB_URL" > /tmp/run.txt 2>&1 &
+  tail -f /tmp/run.txt        # follow live output
 
-  # Log to file — Windows (PowerShell):
-  Start-Process python -ArgumentList "-u agent_test/app_workday_v3.py `"JOB_URL`"" -RedirectStandardOutput run.txt -NoNewWindow
-  Get-Content run.txt -Wait
-
-  # Screenshots saved to agent_test/artifacts/ on errors or stuck pages.
+  # Screenshots are saved to agent_test/artifacts/ on errors or stuck pages.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  FLAGS
@@ -57,55 +53,13 @@ from playwright.async_api import async_playwright, Page
 SCRIPT_DIR  = Path(__file__).parent
 load_dotenv(SCRIPT_DIR / ".env")
 
-# ── Chrome path: auto-detect by platform ─────────────────────────────────────
-def _find_chrome() -> str:
-    import platform
-    system = platform.system()
-    candidates = []
-    if system == "Darwin":
-        candidates = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
-    elif system == "Windows":
-        candidates = [
-            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
-        ]
-    else:  # Linux
-        candidates = ["/usr/bin/google-chrome", "/usr/bin/chromium-browser",
-                      "/usr/bin/chromium", "/snap/bin/chromium"]
-    for p in candidates:
-        if os.path.exists(p):
-            return p
-    # Last resort: let Playwright use its own bundled Chromium
-    return ""
-
+CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 LIBRARY     = json.loads((SCRIPT_DIR / "library.json").read_text())
 PI          = LIBRARY["personal_info"]
 WE          = LIBRARY.get("work_experience", [])
 EDU         = LIBRARY.get("education_history", [])
 LANG        = LIBRARY.get("languages", [])
-
-# Resume path: from library.json (relative to repo root) or auto-discover
-# Always resolve to absolute path — set_input_files requires absolute paths
-_resume_rel = LIBRARY.get("resume_path", "")
-if _resume_rel:
-    _rp = Path(_resume_rel) if Path(_resume_rel).is_absolute() else SCRIPT_DIR.parent / _resume_rel
-    RESUME_PATH = str(_rp.resolve())
-else:
-    _pdfs = list(SCRIPT_DIR.glob("*.pdf"))
-    RESUME_PATH = str(_pdfs[0].resolve()) if _pdfs else ""
-
-# User agent: match the actual platform so Workday renders the platform-correct version
-import platform as _plat
-_ua_os = {
-    "Darwin":  "Macintosh; Intel Mac OS X 10_15_7",
-    "Windows": "Windows NT 10.0; Win64; x64",
-    "Linux":   "X11; Linux x86_64",
-}.get(_plat.system(), "Windows NT 10.0; Win64; x64")
-USER_AGENT = (f"Mozilla/5.0 ({_ua_os}) AppleWebKit/537.36 "
-              f"(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-
-CHROME_PATH = _find_chrome()
+RESUME_PATH = str(SCRIPT_DIR / "joshua_li_resume_6_2026.pdf")
 EMAIL       = PI["email"]
 PASSWORD    = PI["password"]
 ARTIFACTS   = SCRIPT_DIR / "artifacts"
@@ -208,7 +162,6 @@ async def deepseek_fill_page(fields: list[dict],
     field_lines = []
     for f in fields:
         line = f"[{f['index']}] type={f['type']} label={f['label']!r}"
-        if f.get("date_seq"): line += f" date_seq={f['date_seq']}"   # start vs end date
         if f.get("options"): line += f" options={f['options']}"
         if f.get("value"):   line += f" current={f['value']!r}"
         if f.get("section"): line += f" section={f['section']!r}"
@@ -252,7 +205,7 @@ PHONE_DIGITS = "".join(c for c in PI.get("phone","") if c.isdigit())
 # Normalize sponsorship flag: "No"/"false"/False/0 → False; anything else → True
 _sponsor_raw = JBM.get("requires_visa_sponsorship", "No")
 NEEDS_SPONSOR = str(_sponsor_raw).lower() not in ("no", "false", "0", "")
-# Disability answer from library (default "yes" per CC-305 self-ID guidelines)
+# Disability answer from library (default "yes" per CC-305 self-ID guidance)
 DISABILITY_ANSWER = str(REG.get("disability_answer", "yes")).lower()
 
 def label_match(label: str, *keywords) -> bool:
@@ -293,10 +246,7 @@ def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
     current = field.get("value", "")
 
     # Skip if already filled meaningfully (but 'false' = unchecked checkbox, must not skip)
-    # Also treat values containing "select one" as unset placeholders (Workday button pattern:
-    # aria-label = "<FieldLabel> Select One Required" → value = "<FieldLabel> Select One")
-    if current and current.lower() not in ("select one", "", "false", "unchecked") \
-            and "select one" not in current.lower():
+    if current and current.lower() not in ("select one", "", "false", "unchecked"):
         return None
 
     # ── Radio buttons — check BEFORE generic input handling ──────────────────
@@ -318,16 +268,12 @@ def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
             return fuzzy_pick(opts, "No") or opts[0]
         if label_match(label, "relocat"):
             return fuzzy_pick(opts, "Yes") or opts[0]
-        if label_match(label, "certify", "verify", "accurate", "acknowledge", "confirm",
-                       "agree", "consent", "terms", "true and correct"):
-            return fuzzy_pick(opts, "Yes") or fuzzy_pick(opts, "I agree") or opts[0]
         # Default generic Yes/No → No (safer)
         return fuzzy_pick(opts, "No") or opts[0]
 
     # ── Checkbox — check BEFORE generic text/input block ────────────────────
     if ftype == "checkbox" or field.get("role") == "checkbox":
-        if label_match(label, "consent", "agree", "terms", "condition", "certify",
-                       "verify", "accurate", "correct", "true and correct", "acknowledge"):
+        if label_match(label, "consent", "agree", "terms", "condition", "certify"):
             return "true"
         if label_match(label, "preferred name"):
             return "false"
@@ -341,14 +287,10 @@ def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
                     return "true"
                 return "false"
             else:
-                # Select "No, I do not have a disability" if disability_answer="no"
-                # or the "prefer not to answer" variant if disability_answer="prefer_not"
-                prefer_not = DISABILITY_ANSWER in ("prefer_not", "no_answer", "decline")
-                if prefer_not:
-                    if any(k in ll for k in ("don't wish", "don't want to answer", "prefer not", "decline to", "do not want to answer", "i do not want to answer")):
-                        return "true"
-                # Default "no": select explicit "No" option (label starts with "No")
-                if ll.startswith("no") and "disability" in ll:
+                # Select "No, I do not have a disability" or "prefer not to answer"
+                if "no" in ll and "disability" in ll:
+                    return "true"
+                if any(k in ll for k in ("don't wish", "don't want to answer", "prefer not", "decline to", "do not want", "i do not want")):
                     return "true"
                 return "false"
         return None
@@ -395,10 +337,8 @@ def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
             return str(COMP.get("expected_base_salary", "120000"))
 
         # Availability / eligibility date fields (Month/Day/Year in Application Questions)
-        # Exclude Self Identify page — those month/day/year fields are signature dates
-        # already filled by handle_self_identify; returning None skips re-filling them.
         if label_match(label, "month", "day", "year") and (
-            "application" in section or not any(k in section for k in ("work","experience","education","school","self identify","signature"))
+            "application" in section or not any(k in section for k in ("work","experience","education","school"))
         ):
             import datetime
             avail = datetime.date.today() + datetime.timedelta(weeks=2)
@@ -500,24 +440,13 @@ def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
         if label_match(label, "eligibil", "start date", "available", "when can you start"):
             return fuzzy_pick(opts, "Immediately") or fuzzy_pick(opts, "2 weeks") or opts[0]
 
-        # Desired compensation — match salary range option containing the target value
+        # Desired compensation
         if label_match(label, "compensation", "salary", "pay", "desired"):
-            comp = COMP.get("expected_base_salary", 0)
-            try:
-                comp_n = int(str(comp).replace(",","").replace("$","").strip())
-            except (ValueError, TypeError):
-                comp_n = 0
-            if comp_n and opts:
-                # Find the range option whose upper bound >= comp and lower bound <= comp
-                def range_score(opt):
-                    nums = [int(n.replace(",","")) for n in re.findall(r'[\d,]+', opt)]
-                    if len(nums) >= 2:
-                        lo, hi = nums[0], nums[1]
-                        if lo <= comp_n <= hi: return 0      # exact range match
-                        if comp_n > hi: return comp_n - hi   # above range
-                        return lo - comp_n                   # below range
-                    return 9999
-                best = min(opts, key=range_score)
+            comp = COMP.get("expected_base_salary", "")
+            if comp and opts:
+                best = fuzzy_pick(opts, str(comp))
+                if not best:
+                    best = opts[len(opts)//2] if len(opts) > 1 else opts[0]
                 return best
             return fuzzy_pick(opts, "$75,000") or fuzzy_pick(opts, "$50,000") or opts[0]
 
@@ -779,9 +708,6 @@ SCAN_JS = r"""(rootSel) => {
         let value = '';
         if (type==='checkbox') value = el.checked ? 'true' : 'false';
         else if (tag==='select') value = el.options[el.selectedIndex]?.text.trim()||'';
-        else if (tag==='button') {
-            value = (el.getAttribute('aria-label')||'').trim();
-        }
         else if (inSelectInput) {
             // Read current pill selection
             // Strategy 1: selectedItem pill (most reliable)
@@ -873,7 +799,7 @@ async def exec_text(page: Page, field: dict, value: str):
         await page.wait_for_timeout(200)
 
     await el.fill(value)
-    # Trigger React synthetic events so React's internal state stays in sync with the DOM value
+    # Trigger React synthetic events (handles both input and textarea)
     await page.evaluate(f"""() => {{
         const el = document.querySelector('[data-fill-idx="{idx}"]') || document.getElementById('{fid}');
         if (!el) return;
@@ -885,7 +811,6 @@ async def exec_text(page: Page, field: dict, value: str):
         el.dispatchEvent(new Event('input', {{bubbles: true}}));
         el.dispatchEvent(new Event('change', {{bubbles: true}}));
     }}""")
-
     print(f"    ✓ text  [{idx}] {field['label']!r} = {value!r}")
 
 async def exec_button_dropdown(page: Page, field: dict, value: str):
@@ -1029,45 +954,30 @@ async def exec_selectinput(page: Page, field: dict, value: str):
 
         # Pick best match from filtered results
         match = fuzzy_pick(results, term) or results[0]
-        match_text = match[:60]
-        # Use Playwright locator click — React dropdowns ignore JS-injected MouseEvents
-        opt_loc = (
-            page.locator('[data-automation-id="activeListContainer"] [role="option"],'
-                         '[data-popper-placement] [role="option"]')
-            .filter(has_text=match_text)
-            .first
-        )
-        clicked = None
-        try:
-            await opt_loc.wait_for(state="visible", timeout=3000)
-            await opt_loc.click(timeout=3000)
-            clicked = match_text
-        except Exception:
-            # Fallback: JS click
-            match_lower = match[:60].lower()
-            clicked = await page.evaluate(f"""() => {{
-                const getVisible = (c) => Array.from(c.querySelectorAll('[role="option"]'))
-                    .filter(e => e.getBoundingClientRect().height > 0);
-                let opts = [];
-                const c1 = Array.from(document.querySelectorAll('[data-automation-id="activeListContainer"]'))
-                    .find(x => x.getBoundingClientRect().height > 0);
-                if (c1) opts = getVisible(c1);
-                if (!opts.length) {{
-                    const poppers = Array.from(document.querySelectorAll('[data-popper-placement]'))
-                        .filter(x => x.getBoundingClientRect().height > 0);
-                    for (const p of poppers) {{ const o = getVisible(p); if (o.length) {{ opts = o; break; }} }}
-                }}
-                const target = opts.find(e => e.innerText.trim().toLowerCase() === '{match_lower}') ||
-                               opts.find(e => e.innerText.trim().toLowerCase().includes('{match_lower}')) ||
-                               opts[0];
-                if (target) {{
-                    target.scrollIntoView({{block:'nearest'}});
-                    target.dispatchEvent(new MouseEvent('mousedown', {{bubbles:true}}));
-                    target.click();
-                    return target.innerText.trim();
-                }}
-                return null;
-            }}""")
+        match_lower = match[:60].lower()
+        clicked = await page.evaluate(f"""() => {{
+            const getVisible = (c) => Array.from(c.querySelectorAll('[role="option"]'))
+                .filter(e => e.getBoundingClientRect().height > 0);
+            let opts = [];
+            const c1 = Array.from(document.querySelectorAll('[data-automation-id="activeListContainer"]'))
+                .find(x => x.getBoundingClientRect().height > 0);
+            if (c1) opts = getVisible(c1);
+            if (!opts.length) {{
+                const poppers = Array.from(document.querySelectorAll('[data-popper-placement]'))
+                    .filter(x => x.getBoundingClientRect().height > 0);
+                for (const p of poppers) {{ const o = getVisible(p); if (o.length) {{ opts = o; break; }} }}
+            }}
+            const target = opts.find(e => e.innerText.trim().toLowerCase() === '{match_lower}') ||
+                           opts.find(e => e.innerText.trim().toLowerCase().includes('{match_lower}')) ||
+                           opts[0];
+            if (target) {{
+                target.scrollIntoView({{block:'nearest'}});
+                target.dispatchEvent(new MouseEvent('mousedown', {{bubbles:true}}));
+                target.click();
+                return target.innerText.trim();
+            }}
+            return null;
+        }}""")
         await page.wait_for_timeout(400)
         # Close dropdown cleanly
         await inp.press("Escape")
@@ -1147,26 +1057,15 @@ async def exec_checkbox(page: Page, field: dict, value: str):
         return
     # Try multiple click strategies for Workday custom checkboxes
     clicked = False
-    # Strategy 1: click the associated <label> — React responds to label clicks, not input
-    if fid:
-        try:
-            lbl = page.locator(f"label[for='{fid}']").first
-            if await lbl.count():
-                await lbl.scroll_into_view_if_needed(timeout=3000)
-                await lbl.click(timeout=3000)
-                clicked = True
-        except Exception:
-            pass
-    # Strategy 2: Playwright click on the element itself
+    # Strategy 1: Playwright click (not check) — triggers visual checkbox
+    try:
+        await el.scroll_into_view_if_needed(timeout=3000)
+        await el.click(force=True, timeout=3000)
+        clicked = True
+    except Exception:
+        pass
     if not clicked:
-        try:
-            await el.scroll_into_view_if_needed(timeout=3000)
-            await el.click(force=True, timeout=3000)
-            clicked = True
-        except Exception:
-            pass
-    if not clicked:
-        # Strategy 3: Find and click the visible wrapper/label via JS
+        # Strategy 2: Find and click the visible wrapper/label
         clicked = await page.evaluate(f"""() => {{
             const el = document.querySelector('[data-fill-idx="{idx}"]') || document.getElementById('{fid}');
             if (!el) return false;
@@ -1210,7 +1109,7 @@ async def execute_answer(page: Page, field: dict, value: str):
         elif field.get("isSelectInput"):
             # Workday selectinput widget — type-to-search dropdown
             await exec_selectinput(page, field, value)
-        elif tag == "button":
+        elif tag == "button" and (field.get("id") or field.get("automation_id")):
             await exec_button_dropdown(page, field, value)
         elif tag in ("input","textarea") or ftype in ("text","email","tel","number","url","search"):
             await exec_text(page, field, value)
@@ -1284,7 +1183,7 @@ async def save_and_continue(page: Page) -> bool:
     if heading_after2 != heading_before or url_after2 != url_before:
         return True
     # Still stuck — screenshot for diagnostics
-    shot = str(ARTIFACTS / f"stuck_{heading_before.replace(' ','_')}.png")
+    shot = f"/tmp/stuck_{heading_before.replace(' ','_')}.png"
     await page.screenshot(path=shot, full_page=False)
     print(f"  [NAV] screenshot: {shot}")
     # Print all visible text that looks like errors or required hints
@@ -1363,54 +1262,23 @@ async def smart_fill_page(page: Page, heading: str, context_hint: str = ""):
     await prefetch_options(page, fillable)
     await page.wait_for_timeout(600)  # let page settle after prefetch opens/closes
 
-    # Date spinbuttons (Month/Day/Year) are deterministic — always use rule-based answers
-    # regardless of DeepSeek mode.  They have no options list so the LLM can't reason
-    # about them, and it may return wrong format ("July" instead of "07") or skip them.
-    import datetime as _dt
-    _date_labels = {"month", "day", "year"}
-    avail = _dt.date.today() + _dt.timedelta(weeks=2)
-    _date_answers = {
-        "month": str(avail.month).zfill(2),
-        "day":   str(avail.day).zfill(2),
-        "year":  str(avail.year),
-    }
-    date_spinbuttons = [
-        f for f in fillable
-        if f.get("tag") in ("input",) and not f.get("options")
-        and f["label"].strip("* ").lower() in _date_labels
-    ]
-    non_date_fillable = [f for f in fillable if f not in date_spinbuttons]
-
-    # Primary: DeepSeek handles all non-date fields
+    # Primary: DeepSeek
     if DEEPSEEK_KEY:
-        print(f"  [LLM] Sending {len(non_date_fillable)} fields to DeepSeek "
-              f"({len(date_spinbuttons)} date spinbuttons handled by rules)...")
-        answers = await deepseek_fill_page(non_date_fillable)
+        print(f"  [LLM] Sending {len(fillable)} fields to DeepSeek...")
+        answers = await deepseek_fill_page(fillable)
         print(f"  [LLM] Got {len(answers)} answers")
     else:
         print(f"  [RULES] DeepSeek unavailable — using label-matching rules")
         answers = await rule_based_fill_page(fillable, context_hint or heading)
 
     field_map = {f["index"]: f for f in fillable}
-
-    # Execute DeepSeek/rule answers first (checkboxes before other fields)
-    for ans in sorted(answers,
-                      key=lambda a: 0 if field_map.get(a.get("index",0),{}).get("type") in ("checkbox","radio") else 1):
+    for ans in answers:
         idx = ans.get("index"); val = ans.get("value","")
         if idx is None or not val: continue
         field = field_map.get(idx)
         if field:
             await execute_answer(page, field, val)
             await page.wait_for_timeout(200)
-
-    # Always execute date spinbuttons with rule-based values (even in DeepSeek mode)
-    if DEEPSEEK_KEY and date_spinbuttons:
-        for f in date_spinbuttons:
-            val = _date_answers.get(f["label"].strip("* ").lower(), "")
-            if val:
-                await execute_answer(page, f, val)
-                await page.wait_for_timeout(150)
-                print(f"    ✓ date-rule [{f['index']}] {f['label']!r} = {val!r}")
 
 # ── Sign-in ───────────────────────────────────────────────────────────────────
 
@@ -1667,26 +1535,8 @@ async def fill_add_dialog(page: Page, dialog_label: str, entry: dict = None, sec
     await prefetch_options(page, fillable)
 
     if DEEPSEEK_KEY:
-        # Date spinbuttons (Month/Year in WE/EDU dialogs) are handled by entry_answer
-        # — values come directly from library.json as numeric strings.
-        # DeepSeek can't add value here and may return wrong format ("December" vs "12")
-        # or swap start/end. Always use entry_answer for these.
-        _dlabel = {"month", "year", "day"}
-        date_fields   = [f for f in fillable
-                         if f.get("tag") == "input" and not f.get("options")
-                         and f["label"].strip("* ").lower() in _dlabel]
-        llm_fillable  = [f for f in fillable if f not in date_fields]
-
         # Pass entry context so LLM knows which specific WE/EDU/LANG entry it's filling
-        answers = await deepseek_fill_page(llm_fillable, entry=entry, section_type=section_type)
-
-        # Fill date spinbuttons via entry_answer (deterministic, correct numeric format)
-        for f in date_fields:
-            val = entry_answer(f, entry, section_type) if (entry and section_type) else None
-            if val is None:
-                val = rule_based_answer(f, dialog_label)
-            if val:
-                answers.append({"index": f["index"], "value": val})
+        answers = await deepseek_fill_page(fillable, entry=entry, section_type=section_type)
     elif entry and section_type:
         # Use entry-specific answers
         answers = []
@@ -1751,20 +1601,6 @@ async def exec_skills_field(page: Page, field: dict, skills: list[str]):
             await inp.click(force=True, timeout=5000)
         except Exception:
             pass
-
-        # Check already-selected pills BEFORE typing to avoid unnecessary searches
-        # (server pre-populates draft data from previous runs)
-        already_pills = await page.evaluate(f"""() => {{
-            const fid = '{fid}';
-            const el = fid ? document.getElementById(fid) : document.querySelector('[data-fill-idx="{idx}"]');
-            const fw = el?.closest('[data-automation-id^="formField"]') || el?.parentElement;
-            const items = Array.from(fw?.querySelectorAll('[data-automation-id="selectedItem"]') || []);
-            return items.map(e => e.innerText.trim().toLowerCase());
-        }}""")
-        if already_pills and skill.lower() in already_pills:
-            print(f"    ~ skill '{skill}' → already selected (pre-check), skipping")
-            continue
-
         await inp.click(click_count=3, force=True)
         await inp.type(skill, delay=70)
         await page.wait_for_timeout(300)
@@ -1785,7 +1621,6 @@ async def exec_skills_field(page: Page, field: dict, skills: list[str]):
             return [];
         }"""
         results = []
-        # Poll for dropdown results (up to ~3s) — server search can be slow
         for _wait in [800, 800, 800, 600]:
             await page.wait_for_timeout(_wait)
             results = await page.evaluate(READ_JS)
@@ -1798,109 +1633,69 @@ async def exec_skills_field(page: Page, field: dict, skills: list[str]):
             print(f"    ~ skill '{skill}' — no results")
             continue
 
-        # Pick best match: DeepSeek if available (with rule-based fallback), else rule-based only
-        def rule_score(opt):
-            o = opt.lower()
-            skill_l = skill.lower()
-            if o == skill_l: return 0
-            if o.startswith(skill_l + " "): return 1
-            if re.search(r'\b' + re.escape(skill_l) + r'\b', o): return 2
-            if o.startswith(skill_l): return 3
-            return 99
+        # Get already-selected pills BEFORE picking (used by both DeepSeek and rule-based paths)
+        already_pills = await page.evaluate(f"""() => {{
+            const fid = '{fid}';
+            const el = fid ? document.getElementById(fid) : document.querySelector('[data-fill-idx="{idx}"]');
+            const fw = el?.closest('[data-automation-id^="formField"]') || el?.parentElement;
+            const items = Array.from(fw?.querySelectorAll('[data-automation-id="selectedItem"]') || []);
+            return items.map(e => e.innerText.trim().toLowerCase());
+        }}""")
 
+        # Pick best match: DeepSeek if available, else rule-based scoring
         if DEEPSEEK_KEY:
             best = await deepseek_pick_skill(skill, results, already_pills)
             if best is None:
-                # DeepSeek said no match or errored — fall back to rule-based rather than skip
-                best_rule = min(results, key=rule_score)
-                if rule_score(best_rule) < 99:
-                    best = best_rule
-                    print(f"    → skill '{skill}' → LLM no match, rule fallback picked {best!r}")
-                else:
-                    await inp.press("Escape")
-                    await page.wait_for_timeout(400)
-                    print(f"    ~ skill '{skill}' → LLM + rule both no match, skipping")
-                    continue
-            else:
-                print(f"    → skill '{skill}' → LLM picked {best!r}")
-            # Guard against double-clicking an already-selected pill (same as rule-based path)
-            best_l = best.lower()
-            if already_pills and best_l in already_pills:
-                print(f"    ~ skill '{skill}' → {best!r} already selected, skipping")
                 await inp.press("Escape")
-                await page.wait_for_timeout(300)
+                await page.wait_for_timeout(400)
+                print(f"    ~ skill '{skill}' → LLM said NONE / no good match, skipping")
                 continue
+            print(f"    → skill '{skill}' → LLM picked {best!r}")
         else:
-            # Rule-based only
-            best = min(results, key=rule_score)
-            if rule_score(best) >= 99:
+            # Rule-based: prefer exact match, then starts-with, then whole-word boundary
+            skill_l = skill.lower()
+            def score(opt):
+                o = opt.lower()
+                if o == skill_l: return 0
+                if o.startswith(skill_l + " "): return 1
+                if re.search(r'\b' + re.escape(skill_l) + r'\b', o): return 2
+                if o.startswith(skill_l): return 3
+                return 99
+            best = min(results, key=score)
+            if score(best) >= 99:
                 await inp.press("Escape")
                 await page.wait_for_timeout(400)
                 print(f"    ~ skill '{skill}' → no relevant match (best: {best!r}), skipping")
                 continue
             print(f"    → skill '{skill}' → rule picked {best!r}")
 
-            # Guard against double-clicking an already-selected pill (deselects it)
-            # Use exact match only — substring checks cause false positives (e.g. "SQL" matching "MySQL")
+            # Rule-based: guard against double-clicking an already-selected pill
             best_l = best.lower()
-            if already_pills and best_l in already_pills:
+            if already_pills and any(best_l in p or p in best_l for p in already_pills):
                 print(f"    ~ skill '{skill}' → {best!r} already selected, skipping")
                 await inp.press("Escape")
                 await page.wait_for_timeout(300)
                 continue
 
-        best_lower = best[:60].lower()
-
-        # Use Playwright locator click — React dropdowns ignore JS-injected MouseEvents.
-        # Find the visible option element by text and let Playwright do a real click.
-        # For DeepSeek path: dropdown may have closed during API call — re-search the
-        # original skill term first (not best text) to get the correct results list back.
-        if DEEPSEEK_KEY:
-            await inp.click(click_count=3, force=True)
-            await inp.type(skill, delay=70)   # re-search ORIGINAL term, not LLM text
-            await inp.press("Enter")
-            results = []
-            for _wait in [1000, 1200, 1200, 1200, 1000]:
-                await page.wait_for_timeout(_wait)
-                results = await page.evaluate(READ_JS)
-                if results:
-                    break
-            if not results:
-                await inp.press("Escape")
-                await page.wait_for_timeout(400)
-                print(f"    ~ skill '{skill}' → re-search after LLM returned no results, skipping")
-                continue
-
-        # Click the chosen option via Playwright (real browser event, not JS injection)
-        opt_loc = (
-            page.locator('[data-automation-id="activeListContainer"] [role="option"],'
-                         '[data-popper-placement] [role="option"],'
-                         '[data-automation-id="activeListContainer"] [data-automation-id="promptLeafNode"],'
-                         '[data-popper-placement] [data-automation-id="promptLeafNode"]')
-            .filter(has_text=best[:60])
-            .first
-        )
-        try:
-            await opt_loc.wait_for(state="visible", timeout=3000)
-            await opt_loc.click(timeout=3000)
-            await page.wait_for_timeout(600)
-            print(f"    ✓ skill '{skill}' → clicked {best!r}")
-        except Exception as e:
-            # Fallback: JS click if Playwright locator fails
-            clicked = await page.evaluate(f"""() => {{
-                const all = Array.from(document.querySelectorAll(
-                    '[role="option"],[data-automation-id="promptLeafNode"]'))
-                    .filter(e => e.getBoundingClientRect().height > 0);
-                const t = all.find(e => e.innerText.trim().toLowerCase() === '{best_lower}') ||
-                          all.find(e => e.innerText.trim().toLowerCase().includes('{best_lower}'));
-                if (t) {{ t.dispatchEvent(new MouseEvent('mousedown',{{bubbles:true}})); t.click(); return t.innerText.trim(); }}
-                return null;
-            }}""")
-            await page.wait_for_timeout(600)
-            if clicked:
-                print(f"    ✓ skill '{skill}' → clicked {clicked!r} (JS fallback)")
-            else:
-                print(f"    ~ skill '{skill}' → click failed ({e})")
+        best_lower = best[:50].lower()
+        clicked = await page.evaluate(f"""() => {{
+            const getOpts = (c) => Array.from(c.querySelectorAll('[role="option"],[data-automation-id="promptLeafNode"]'))
+                .filter(e => e.getBoundingClientRect().height > 0);
+            let opts = [];
+            const c1 = Array.from(document.querySelectorAll('[data-automation-id="activeListContainer"]'))
+                .find(x => x.getBoundingClientRect().height > 0);
+            if (c1) opts = getOpts(c1);
+            if (!opts.length) {{
+                const poppers = Array.from(document.querySelectorAll('[data-popper-placement]'))
+                    .filter(x => x.getBoundingClientRect().height > 0);
+                for (const p of poppers) {{ const o = getOpts(p); if (o.length) {{ opts = o; break; }} }}
+            }}
+            const t = opts.find(e => e.innerText.trim().toLowerCase().includes('{best_lower}')) || opts[0];
+            if (t) {{ t.dispatchEvent(new MouseEvent('mousedown',{{bubbles:true}})); t.click(); return t.innerText.trim(); }}
+            return null;
+        }}""")
+        await page.wait_for_timeout(600)
+        print(f"    {'✓' if clicked else '~'} skill '{skill}' → {clicked or best!r} (from {results[:3]})")
         # Close dropdown before next skill
         await inp.press("Escape")
         await page.wait_for_timeout(300)
@@ -1935,11 +1730,7 @@ async def handle_my_experience(page: Page):
         "language": ("lang", LANG),
     }
 
-    # Process buttons in DOM order (Work Experience → Education → Languages)
-    # This preserves the original button indices which are used for nth() clicks.
-    add_btns_sorted = add_btns_info
-
-    for btn_info in add_btns_sorted:
+    for btn_info in add_btns_info:
         label_l = btn_info["label"].lower()
 
         # Websites — skip (no library data needed)
@@ -1960,40 +1751,9 @@ async def handle_my_experience(page: Page):
             print(f"  [ADD] No data for '{btn_info['label']}' — skipping")
             continue
 
-        # Guard: if entries of this type already exist on page (from a previous call),
-        # skip adding new ones to prevent duplicates on retry.
-        # Check for ANY existing form inputs (even empty ones from a failed save) — not just filled ones.
-        if section_type == "work":
-            existing_count = await page.evaluate("""() =>
-                document.querySelectorAll('[data-automation-id="jobTitle"]').length""")
-        elif section_type == "edu":
-            existing_count = await page.evaluate("""() =>
-                document.querySelectorAll('[data-automation-id="school"]').length""")
-        elif section_type == "lang":
-            existing_count = await page.evaluate("""() =>
-                Array.from(document.querySelectorAll('button[data-automation-id="language"]'))
-                    .filter(el => {
-                        const t = el.textContent || '';
-                        return t.trim() !== '' && !t.includes('Select One');
-                    }).length""")
-        else:
-            existing_count = 0
-
-        if existing_count >= len(data_list):
-            print(f"  [ADD] '{btn_info['label']}' already has {existing_count} entries — skipping adds")
-            continue
-
         for entry_idx, entry in enumerate(data_list):
-            # Re-query add-buttons each iteration — DOM re-renders after each dialog close
-            # and old locator references become detached/stale.
+            # Re-query add-buttons each iteration (DOM updates after each dialog)
             add_btns = page.locator("[data-automation-id='add-button']")
-
-            # Wait for buttons to be stable (Workday re-renders after dialog saves)
-            for _stab in range(8):
-                total = await add_btns.count()
-                if total > btn_info["index"]:
-                    break
-                await page.wait_for_timeout(500)
             total = await add_btns.count()
             if btn_info["index"] >= total:
                 print(f"  [ADD] Button index {btn_info['index']} out of range ({total}), stopping")
@@ -2009,18 +1769,8 @@ async def handle_my_experience(page: Page):
             count_before = len(fields_before)
 
             btn = add_btns.nth(btn_info["index"])
-            # Retry click if element detaches mid-action (Workday re-render race)
-            for _attempt in range(3):
-                try:
-                    await btn.scroll_into_view_if_needed(timeout=5000)
-                    await btn.click(timeout=5000)
-                    break
-                except Exception as _e:
-                    if _attempt == 2:
-                        raise
-                    await page.wait_for_timeout(800)
-                    add_btns = page.locator("[data-automation-id='add-button']")
-                    btn = add_btns.nth(btn_info["index"])
+            await btn.scroll_into_view_if_needed()
+            await btn.click()
             await page.wait_for_timeout(1500)
             await fill_add_dialog(page, dialog_label, entry=entry, section_type=section_type,
                                   count_before=count_before, fields_before=fields_before)
@@ -2044,7 +1794,7 @@ async def handle_my_experience(page: Page):
     else:
         print(f"  [SKILLS] No skills in library")
 
-    # Debug: dump all WE field values before save
+    # Debug: dump WE field values before save
     _pre_save_vals = await page.evaluate("""() => {
         const anchors = ['jobTitle','company','dateSectionMonth-input','dateSectionYear-input'];
         return anchors.flatMap(a => {
@@ -2054,159 +1804,52 @@ async def handle_my_experience(page: Page):
     }""")
     print(f"  [PRE-SAVE] WE field values: {_pre_save_vals}")
 
-    # Save with internal retry — avoids the outer loop re-calling handle_my_experience
-    # (which would click Add again and create duplicate WE/EDU/LANG entries).
-    saved = False
-    for _save_attempt in range(3):
-        ok = await save_and_continue(page)
-        if ok:
-            saved = True
-            break
-        # save_and_continue may time out detecting navigation in headed/slow mode
-        # Check if page actually advanced (e.g., to Application Questions)
-        current_heading = await get_heading(page)
-        if current_heading and current_heading != "My Experience":
-            print(f"  [NAV] Detected navigation to '{current_heading}' — marking save as successful")
-            saved = True
-            break
-        if _save_attempt < 2:
-            # Re-scan and re-fill only date spinbutton fields that may have been
-            # reset by React re-renders.  We can't re-run entry_answer without
-            # section/entry context, so iterate known WE+EDU entries by order.
-            print(f"  [RETRY {_save_attempt+1}] Re-filling date spinbutton fields...")
-            retry_fields = await page.evaluate(SCAN_JS, None)
-            date_fields_rf = [rf for rf in retry_fields
-                              if rf.get("tag") == "input"
-                              and rf.get("label","").strip("* ").lower() in ("month","year","day")]
-            all_entries = list(WE or []) + list(EDU or [])
-            # Assign each date field pair (Month+Year) to the appropriate entry by order
-            date_pairs = []
-            i = 0
-            while i < len(date_fields_rf):
-                lbl = date_fields_rf[i].get("label","").strip("* ").lower()
-                if lbl in ("month","day") and i+1 < len(date_fields_rf):
-                    date_pairs.append((date_fields_rf[i], date_fields_rf[i+1]))
-                    i += 2
-                else:
-                    i += 1
-            # Pair date pairs with entries (start+end dates per entry)
-            # Each WE entry has up to 2 date pairs; EDU similarly
-            entry_date_vals = []
-            for ent in all_entries:
-                stype = "work" if ent.get("company") else "edu"
-                sm = entry_answer({"label": "Month", "date_seq": "start"}, ent, stype)
-                sy = entry_answer({"label": "Year",  "date_seq": "start"}, ent, stype)
-                em = entry_answer({"label": "Month", "date_seq": "end"},   ent, stype)
-                ey = entry_answer({"label": "Year",  "date_seq": "end"},   ent, stype)
-                if sm and sy: entry_date_vals.append((sm, sy))
-                if em and ey: entry_date_vals.append((em, ey))
-            for pair_i, (mf, yf) in enumerate(date_pairs):
-                if pair_i < len(entry_date_vals):
-                    mv, yv = entry_date_vals[pair_i]
-                    mf["page_heading"] = "My Experience"
-                    yf["page_heading"] = "My Experience"
-                    await exec_text(page, mf, mv)
-                    await page.wait_for_timeout(200)
-                    await exec_text(page, yf, yv)
-                    await page.wait_for_timeout(200)
-            await page.wait_for_timeout(1000)
-    if not saved:
-        print(f"  [ERR] handle_my_experience: save failed after 3 attempts — stopping")
-    return saved
+    await save_and_continue(page)
 
 async def handle_voluntary_disclosures(page: Page):
-    # First pass — fill all visible fields
     await smart_fill_page(page, "Voluntary Disclosures")
-
-    # Scroll to bottom and re-scan to catch any below-fold fields
-    # ("I certify the information is accurate", hidden radio buttons, etc.)
-    await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
-    await page.wait_for_timeout(700)
-    await smart_fill_page(page, "Voluntary Disclosures")
-    await page.evaluate("() => window.scrollTo(0, 0)")
-    await page.wait_for_timeout(400)
-
-    # T&C checkbox — robust multi-strategy click since Workday uses custom React checkboxes
+    # T&C checkbox — try multiple strategies since Workday uses custom React checkboxes
     tc_id = "termsAndConditions--acceptTermsAndAgreements"
     tc_checked = await page.evaluate(f"""() => {{
         const el = document.getElementById('{tc_id}');
-        return el ? (el.checked || el.getAttribute('aria-checked') === 'true') : null;
+        return el ? (el.checked || el.getAttribute('aria-checked') === 'true') : false;
     }}""")
-
-    if tc_checked is None:
-        # tc_id not found — look for any unchecked consent checkbox on the page
-        tc_checked = await page.evaluate("""() => {
-            const inputs = Array.from(document.querySelectorAll('input[type="checkbox"]'));
-            for (const inp of inputs) {
-                const id = inp.id || '';
-                const lbl = document.querySelector(`label[for="${id}"]`)?.innerText || '';
-                if (/consent|agree|terms|certify/i.test(lbl) || /consent|agree|terms|certify/i.test(id)) {
-                    return inp.checked || inp.getAttribute('aria-checked') === 'true';
-                }
-            }
-            return null;
-        }""")
-        print(f"    [T&C] tc_id not found, scanned for consent checkbox: {tc_checked}")
-
     if not tc_checked:
-        # Strategy 1: click associated <label> (React-friendly)
+        # Strategy 1: scroll to view and click the visible wrapper
         clicked = await page.evaluate(f"""() => {{
-            const input = document.getElementById('{tc_id}')
-                       || Array.from(document.querySelectorAll('input[type="checkbox"]'))
-                              .find(i => /consent|agree|terms|certify/i.test(i.id)
-                                      || /consent|agree|terms|certify/i.test(
-                                           document.querySelector('label[for="'+i.id+'"]')?.innerText||''));
+            const input = document.getElementById('{tc_id}');
             if (!input) return false;
-            const lbl = document.querySelector(`label[for="${{input.id}}"]`);
-            if (lbl && lbl.getBoundingClientRect().height > 0) {{
-                lbl.scrollIntoView({{block:'center'}});
-                lbl.click();
-                return true;
-            }}
-            // Fallback: walk up for clickable wrapper
+            // Walk up to find a visible ancestor with clickable size
             let node = input.parentElement;
             for (let i=0; i<8 && node && node !== document.body; i++) {{
                 const rect = node.getBoundingClientRect();
                 if (rect.height > 10 && rect.width > 10) {{
-                    node.scrollIntoView({{block:'center'}});
-                    node.click();
+                    const cbTarget = node.querySelector('[data-automation-id*="checkbox"],[class*="checkbox"],[class*="Checkbox"]')
+                                  || node;
+                    cbTarget.scrollIntoView({{block:'center'}});
+                    cbTarget.click();
                     return true;
                 }}
                 node = node.parentElement;
             }}
             return false;
         }}""")
-        await page.wait_for_timeout(500)
+        await page.wait_for_timeout(400)
         tc_checked = await page.evaluate(f"""() => {{
-            const el = document.getElementById('{tc_id}')
-                    || Array.from(document.querySelectorAll('input[type="checkbox"]'))
-                           .find(i => /consent|agree|terms|certify/i.test(i.id)
-                                   || /consent|agree|terms|certify/i.test(
-                                        document.querySelector('label[for="'+i.id+'"]')?.innerText||''));
+            const el = document.getElementById('{tc_id}');
             return el ? (el.checked || el.getAttribute('aria-checked') === 'true') : false;
         }}""")
         if not tc_checked:
-            # Strategy 2: Playwright locator click
-            for sel in [f"#{tc_id}", "[id*='termsAndConditions']", "[data-automation-id*='termsAndConditions']"]:
-                try:
-                    el = page.locator(sel).first
-                    if await el.count():
-                        lbl_id = await el.get_attribute("id") or ""
-                        if lbl_id:
-                            lbl = page.locator(f"label[for='{lbl_id}']").first
-                            if await lbl.count():
-                                await lbl.scroll_into_view_if_needed(timeout=3000)
-                                await lbl.click(timeout=3000)
-                                await page.wait_for_timeout(400)
-                                tc_checked = await el.evaluate("el => el.checked || el.getAttribute('aria-checked') === 'true'")
-                                if tc_checked: break
-                        await el.scroll_into_view_if_needed(timeout=3000)
-                        await el.click(force=True, timeout=3000)
-                        await page.wait_for_timeout(400)
-                        tc_checked = await el.evaluate("el => el.checked || el.getAttribute('aria-checked') === 'true'")
-                        if tc_checked: break
-                except Exception as e:
-                    print(f"    ~ T&C strategy2 ({sel}): {e}")
+            # Strategy 2: Playwright mouse click at element bounding box
+            try:
+                el = page.locator(f"#{tc_id}").first
+                if await el.count():
+                    await el.scroll_into_view_if_needed(timeout=3000)
+                    await el.click(force=True, timeout=3000)
+                    await page.wait_for_timeout(400)
+                    tc_checked = await el.evaluate("el => el.checked || el.getAttribute('aria-checked') === 'true'")
+            except Exception as e:
+                print(f"    ~ T&C click2: {e}")
         print(f"    {'✓' if tc_checked else '~'} T&C checked (verified={tc_checked})")
     else:
         print(f"    ✓ T&C already checked")
@@ -2217,66 +1860,56 @@ async def handle_voluntary_disclosures(page: Page):
 async def handle_self_identify(page: Page):
     print("\n[PAGE] Self Identify")
     today = datetime.today()
-
-    # Fill name if the specific Workday Self-ID field exists
     name_el = page.locator("#selfIdentifiedDisabilityData--name").first
     if await name_el.count():
         await page.evaluate("el => el.scrollIntoView({block:'center'})", await name_el.element_handle())
         await page.wait_for_timeout(300)
         await name_el.fill(f"{PI['first_name']} {PI['last_name']}")
         print(f"    ✓ name = '{PI['first_name']} {PI['last_name']}'")
-
-    # Fill signature date (today) — use nativeInputValueSetter directly; el.fill() on
-    # React spinbuttons is unreliable (fails on Windows with "outside viewport" errors)
     for sfx, val in [("dateSectionMonth-input", str(today.month)),
                      ("dateSectionDay-input",   str(today.day)),
                      ("dateSectionYear-input",  str(today.year))]:
         full_id = f"selfIdentifiedDisabilityData--dateSignedOn-{sfx}"
-        filled = await page.evaluate(f"""() => {{
-            const e = document.getElementById('{full_id}');
-            if (!e) return false;
-            e.scrollIntoView({{block:'center'}});
-            e.focus();
-            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-            if (setter) setter.call(e, '{val}');
-            else e.value = '{val}';
-            e.dispatchEvent(new Event('input',  {{bubbles:true}}));
-            e.dispatchEvent(new Event('change', {{bubbles:true}}));
-            return true;
-        }}""")
-        if filled:
-            print(f"    ✓ date {sfx} = {val!r}")
-
-    # smart_fill_page handles disability radio + language dropdown;
-    # pass context "self identify signature" so the month/day/year rule
-    # knows these are TODAY (signature), not an availability/start date
-    await smart_fill_page(page, "Self Identify", context_hint="self identify signature")
+        el = page.locator(f"#{full_id}").first
+        if await el.count():
+            try:
+                # Scroll into view via JS (handles nested scrollable containers)
+                await page.evaluate(f"() => {{ const e=document.getElementById('{full_id}'); if(e) e.scrollIntoView({{block:'center'}}); }}")
+                await page.wait_for_timeout(300)
+                await el.click(force=True, timeout=5000)
+                await el.fill(val)
+                print(f"    ✓ date {sfx} = {val!r}")
+            except Exception as ex:
+                # Fallback: JS fill + dispatch events
+                await page.evaluate(f"""() => {{
+                    const e = document.getElementById('{full_id}');
+                    if (!e) return;
+                    e.focus();
+                    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
+                    nativeInputValueSetter.call(e, '{val}');
+                    e.dispatchEvent(new Event('input', {{bubbles:true}}));
+                    e.dispatchEvent(new Event('change', {{bubbles:true}}));
+                }}""")
+                print(f"    ✓ date {sfx} = {val!r} (js fallback, err={ex})")
+    await smart_fill_page(page, "Self Identify")
     await save_and_continue(page)
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
     mode = "DeepSeek" if DEEPSEEK_KEY else "rule-based fallback"
-    key_hint = f"sk-...{DEEPSEEK_KEY[-4:]}" if DEEPSEEK_KEY else "NOT SET (add DEEPSEEK_API_KEY to agent_test/.env)"
-    print(f"[BOT] Workday Application Bot")
-    print(f"[BOT] Fill mode  : {mode}")
-    print(f"[BOT] DeepSeek   : {key_hint}")
-    print(f"[BOT] Chrome     : {CHROME_PATH or '(Playwright bundled Chromium)'}")
-    print(f"[BOT] Resume     : {RESUME_PATH}")
-    print(f"[BOT] Job        : {job_url}")
-    print(f"[BOT] Display    : {'headed (visible)' if headed else 'headless (background)'}\n")
+    print(f"[BOT] Workday Application Bot — fill mode: {mode}")
+    print(f"[BOT] Job: {job_url}")
+    print(f"[BOT] Display: {'headed (visible)' if headed else 'headless (background)'}\n")
 
     async with async_playwright() as pw:
-        launch_kwargs = dict(
-            headless=not headed,
+        browser = await pw.chromium.launch(
+            executable_path=CHROME_PATH, headless=not headed,
             args=["--disable-blink-features=AutomationControlled","--no-first-run",
                   "--disable-web-security","--no-sandbox"])
-        if CHROME_PATH:
-            launch_kwargs["executable_path"] = CHROME_PATH
-        browser = await pw.chromium.launch(**launch_kwargs)
         ctx = await browser.new_context(
             viewport={"width":1280,"height":900},
-            user_agent=USER_AGENT)
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
         await ctx.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
         page = await ctx.new_page()
 
@@ -2284,36 +1917,11 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
         await page.goto(job_url, wait_until="domcontentloaded", timeout=30000)
         await page.wait_for_timeout(3000)
 
-        # Wait up to 60s for the Apply button (headed mode may show sign-in overlay)
-        try:
-            await page.locator("[data-automation-id='adventureButton']").first.wait_for(state="visible", timeout=60000)
-        except Exception:
-            pass
-        apply_btn = page.locator("[data-automation-id='adventureButton']").first
-        try:
-            await apply_btn.click(force=True, timeout=10000)
-        except Exception:
-            await page.evaluate("() => { const b = document.querySelector('[data-automation-id=\\'adventureButton\\']'); if(b) b.click(); }")
+        await page.locator("[data-automation-id='adventureButton']").first.click()
         await page.wait_for_timeout(1500)
 
-        # After clicking Apply, sign-in may be required before "Apply Manually" appears
-        if await page.locator("[data-automation-id='signInLink']").count():
-            await sign_in(page)
-            await page.wait_for_timeout(2000)
-            # Re-click Apply after sign-in if we're back on the listing page
-            if await page.locator("[data-automation-id='adventureButton']").count():
-                try:
-                    await page.locator("[data-automation-id='adventureButton']").first.click(force=True, timeout=10000)
-                except Exception:
-                    await page.evaluate("() => { const b = document.querySelector('[data-automation-id=\\'adventureButton\\']'); if(b) b.click(); }")
-                await page.wait_for_timeout(1500)
-
         am = page.locator("[data-automation-id='applyManually']").first
-        try:
-            await am.wait_for(state="visible", timeout=15000)
-        except Exception:
-            pass
-        href = await am.get_attribute("href", timeout=15000)
+        href = await am.get_attribute("href")
         if href:
             await page.goto(href, wait_until="domcontentloaded", timeout=30000)
         else:
@@ -2366,25 +1974,20 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
                     print("\n" + "="*60)
                     print("  ⚠️  REVIEW — all fields filled. Check the browser.")
                     print("="*60)
-                    review_shot = str(ARTIFACTS / "review_page.png")
-                    await page.screenshot(path=review_shot)
-                    print(f"  Screenshot saved: {review_shot}")
+                    await page.screenshot(path="/tmp/review_page.png")
+                    print(f"  Screenshot saved: /tmp/review_page.png")
                     try:
                         await asyncio.to_thread(input, "  → Press [Enter] to submit, Ctrl+C to abort: ")
                         await save_and_continue(page)
                         print("  ✓ Submitted!")
                     except (EOFError, KeyboardInterrupt):
-                        print(f"  ⚠️  Non-interactive mode — NOT submitting. Review at {review_shot}")
+                        print("  ⚠️  Non-interactive mode — NOT submitting. Review at /tmp/review_page.png")
                     break
 
                 elif has_add_buttons:
                     # Experience/Education/Languages page — any tenant name
                     print(f"  → Detected as experience/education page (add-buttons present)")
-                    ok = await handle_my_experience(page)
-                    if not ok:
-                        print(f"  [NAV] My Experience save failed — taking screenshot and stopping")
-                        await page.screenshot(path=str(ARTIFACTS / f"blocked_my_experience.png"))
-                        break
+                    await handle_my_experience(page)
 
                 elif has_tc_checkbox:
                     # Voluntary Disclosures / T&C page — any tenant name
@@ -2421,55 +2024,8 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
         await browser.close()
 
 if __name__ == "__main__":
-    # Windows requires ProactorEventLoop for Playwright subprocess communication
-    if sys.platform == "win32":
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
     args = sys.argv[1:]
     headed = "--show" in args
-    sim_ds = "--sim-ds" in args   # simulate DeepSeek code path using rule-based answers
     url_args = [a for a in args if not a.startswith("--")]
     job_url = url_args[0] if url_args else DEFAULT_JOB_URL
-
-    if sim_ds and not DEEPSEEK_KEY:
-        # Monkey-patch at module globals so every code path that checks DEEPSEEK_KEY
-        # and calls deepseek_fill_page/deepseek_pick_skill runs the DeepSeek branch
-        # — but with rule-based answers (no network calls).
-        async def _sim_deepseek_fill(fields, entry=None, section_type=None, **kw):
-            print(f"  [SIM-DS] Simulating DeepSeek for {len(fields)} fields (rule-based answers)")
-            if entry and section_type:
-                # Use entry-specific answers (same as the real DeepSeek path)
-                answers = []
-                for f in fields:
-                    val = entry_answer(f, entry, section_type)
-                    if val is None:
-                        val = rule_based_answer(f)
-                    if val is not None and val != "":
-                        answers.append({"index": f["index"], "value": val})
-                return answers
-            return await rule_based_fill_page(fields)
-
-        async def _sim_deepseek_pick_skill(search_term, options, already_selected):
-            """Rule-based pick — same logic as exec_skills_field's inline rule_score."""
-            import re as _re
-            def rule_score(opt):
-                o = opt.lower(); sl = search_term.lower()
-                if o == sl: return 0
-                if o.startswith(sl + " "): return 1
-                if _re.search(r'\b' + _re.escape(sl) + r'\b', o): return 2
-                if o.startswith(sl): return 3
-                return 99
-            filtered = [o for o in options if o.lower() not in already_selected]
-            if not filtered:
-                return None
-            best = min(filtered, key=rule_score)
-            return best if rule_score(best) < 99 else None
-
-        import sys as _sys
-        _mod = _sys.modules[__name__]
-        _mod.deepseek_fill_page = _sim_deepseek_fill
-        _mod.deepseek_pick_skill = _sim_deepseek_pick_skill
-        _mod.DEEPSEEK_KEY = "sim"
-        print("[SIM-DS] DeepSeek simulation mode active — using rule-based answers via DS code path")
-
     asyncio.run(main(job_url, headed=headed))
