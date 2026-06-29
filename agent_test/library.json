@@ -148,7 +148,15 @@
     "held_h1b_past_6_years": "No",
     "legally_authorized_to_work_us": "Yes",
     "future_opportunities_consent": "Yes",
-    "referral_source": "LinkedIn"
+    "referral_source": "LinkedIn",
+    "hear_about_us_fallback_order": [
+      "LinkedIn",
+      "Internet/Online Job Posting",
+      "Online Job Board",
+      "Indeed",
+      "Job Board",
+      "Other"
+    ]
   },
   "routing_priorities": {
     "contextual_citizenship_and_export_rules": "Determine whether the job listing is based in the US or Canada. If the role is located in the US, select 'United States of America (USA)' for citizenship and export control fields. If the role is located in Canada, act entirely as a Canadian native: select 'Canada' for citizenship and 'Canada' for export licensing country fields.",
@@ -250,6 +258,85 @@
     "default": {
       "email": "joshualingli@gmail.com",
       "password": "ManekoNeki0!"
+    },
+    "roberthalf": {
+      "email": "joshualingli@gmail.com",
+      "password": "ManekoNeki0!"
     }
-  }
+  },
+  "workday_qa_examples": [
+    {
+      "question": "Are you 18 years or older?",
+      "answer": "Yes",
+      "notes": "Universal \u2014 always Yes"
+    },
+    {
+      "question": "Are you legally authorized to work in the United States?",
+      "answer": "Yes",
+      "notes": "Authorized on OPT/EAD"
+    },
+    {
+      "question": "Will you require sponsorship for employment visa status (H-1B, F-1 OPT, etc.)?",
+      "answer": "No",
+      "notes": "Currently on OPT, no sponsorship needed for duration of OPT"
+    },
+    {
+      "question": "Have you ever been terminated or asked to resign from any previous employment?",
+      "answer": "No"
+    },
+    {
+      "question": "Do you have any relatives currently employed by [company]?",
+      "answer": "No"
+    },
+    {
+      "question": "Are you subject to non-compete, non-solicitation, or equity award agreements that may restrict this role?",
+      "answer": "No"
+    },
+    {
+      "question": "Have you previously worked for Robert Half or Protiviti as an employee or contractor?",
+      "answer": "No"
+    },
+    {
+      "question": "Are you willing to relocate?",
+      "answer": "Yes"
+    },
+    {
+      "question": "Background check and drug test consent",
+      "answer": "I understand and consent to the requirement stated if extended an offer of employment.",
+      "notes": "Matches exact Cox option text; other tenants may use shorter phrasing like 'I understand and consent'"
+    },
+    {
+      "question": "How did you hear about us? / How did you find this job?",
+      "answer": "LinkedIn",
+      "notes": "RH options differ: use 'Internet/Online Job Posting' or 'Other' if LinkedIn not available"
+    },
+    {
+      "question": "Desired salary / expected compensation",
+      "answer": "Use listing salary midpoint from job description (e.g. $74k-$111k \u2192 $92,500)",
+      "notes": "Bot auto-extracts midpoint from listing page"
+    },
+    {
+      "question": "Are you currently enrolled as a student?",
+      "answer": "Yes",
+      "notes": "Enrolled in MS CS at ASU"
+    },
+    {
+      "question": "What is your highest level of education?",
+      "answer": "Bachelor's Degree",
+      "notes": "BS Data Science from UCSD (2025); also pursuing MS CS at ASU"
+    },
+    {
+      "question": "Do you have a valid driver's license?",
+      "answer": "Yes"
+    },
+    {
+      "question": "Are you able to work overtime / irregular hours?",
+      "answer": "Yes"
+    },
+    {
+      "question": "Do you agree to the Terms and Conditions / privacy policy?",
+      "answer": "Yes / I agree",
+      "notes": "Always agree to T&C to proceed"
+    }
+  ]
 }

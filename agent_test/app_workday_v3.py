@@ -378,7 +378,12 @@ def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
         # selectinput (search-dropdown) — treat like a dropdown value
         if field.get("isSelectInput"):
             if label_match(label, "how did you hear", "source", "referral", "learn about"):
-                return "LinkedIn"  # type → Enter → auto-fills as single result pill
+                # Multi-term fallback: LinkedIn → Internet/Online → Job Board → Other
+                hear_terms = LIBRARY.get("job_board_mappings", {}).get(
+                    "hear_about_us_fallback_order",
+                    ["LinkedIn", "Internet/Online Job Posting", "Job Board", "Other"]
+                )
+                return "\n".join(hear_terms)
             if label_match(label, "country") and not label_match(label, "phone"):
                 return "United States of America"
             if label_match(label, "state", "province"):
@@ -481,7 +486,14 @@ def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
             return None  # leave blank — no decline option available
 
         if label_match(label, "how did you hear", "source", "referral", "learn about"):
-            return fuzzy_pick(opts, "Website") or fuzzy_pick(opts, "Job Board") or fuzzy_pick(opts, "LinkedIn") or opts[0]
+            hear_order = LIBRARY.get("job_board_mappings", {}).get(
+                "hear_about_us_fallback_order",
+                ["LinkedIn", "Internet/Online Job Posting", "Job Board", "Other"]
+            )
+            for term in hear_order:
+                pick = fuzzy_pick(opts, term)
+                if pick: return pick
+            return opts[0]
 
         if label_match(label, "country") and not label_match(label, "phone"):
             return fuzzy_pick(opts, "United States") or fuzzy_pick(opts, "USA") or opts[0]
