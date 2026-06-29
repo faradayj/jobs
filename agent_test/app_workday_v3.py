@@ -510,6 +510,25 @@ def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
                        "worked here", "worked for", "restrict"):
             return fuzzy_pick(opts, "No") or opts[0]
 
+        # Relatives / employees at this company
+        if label_match(label, "relative", "family member", "familial"):
+            return fuzzy_pick(opts, "No") or opts[0]
+
+        # Termination / disciplinary history
+        if label_match(label, "terminat", "asked to resign", "discharged", "dismissed"):
+            return fuzzy_pick(opts, "No") or opts[0]
+
+        # Consent / background check / drug test / acknowledgement
+        if label_match(label, "background check", "drug test", "drug screen", "acknowledgment",
+                       "acknowledge", "consent to", "i understand and consent",
+                       "i understand", "agree to"):
+            # Pick the "I understand / consent" option, not "I do not consent"
+            for candidate in opts:
+                if re.search(r'\b(understand|consent|agree)\b', candidate, re.IGNORECASE) \
+                        and not re.search(r'\b(do not|don.t|not consent|not agree)\b', candidate, re.IGNORECASE):
+                    return candidate
+            return fuzzy_pick(opts, "Yes") or opts[0]
+
         # Location-specific compliance (Maryland/Massachusetts type questions)
         if label_match(label, "located in", "applying for employment within", "maryland", "massachusetts",
                        "california", "colorado", "new york"):
@@ -930,14 +949,21 @@ async def exec_button_dropdown(page: Page, field: dict, value: str):
     except Exception:
         pass
     await btn.click()
-    # Wait for options to fully load (retry up to 5x if only disabled "Select One" visible)
+    # Wait for options to fully load (retry up to 8x with re-click if no options appear)
     opts = []
-    for attempt in range(5):
+    for attempt in range(8):
         await page.wait_for_timeout(800 if attempt > 0 else 1200)
         opts = await page.evaluate("()=>Array.from(document.querySelectorAll(\"li[role='option']\")).map(l=>l.innerText.trim()).filter(Boolean)")
         real_opts = [o for o in opts if o.lower() not in ('select one', '')]
         if real_opts:
             break
+        # After 3 failed polls, try re-clicking the button to re-open the dropdown
+        if attempt == 3:
+            try:
+                await btn.click()
+                await page.wait_for_timeout(800)
+            except Exception:
+                pass
     match = fuzzy_pick(opts, value)
     if not match:
         # Skip disabled "Select One" — fall back to first non-disabled option
@@ -1445,27 +1471,237 @@ async def smart_fill_page(page: Page, heading: str, context_hint: str = "",
                 await page.wait_for_timeout(150)
                 print(f"    ✓ date-rule [{f['index']}] {f['label']!r} = {val!r}")
 
-# ── Sign-in ───────────────────────────────────────────────────────────────────
+    # Post-fill phone number: after Phone Device Type selection, React may re-render
+    # the phone input. Re-fill directly via formField-phoneNumber to ensure persisted.
+    # Use pressSequentially to fire real keyboard events per character (React-friendly).
+    if PHONE_DIGITS:
+        phone_inp_sel = '[data-automation-id="formField-phoneNumber"] input'
+        phone_inp = page.locator(phone_inp_sel).first
+        if await phone_inp.count():
+            current_val = await phone_inp.input_value()
+            current_digits = current_val.replace(" ","").replace("-","").replace("(","").replace(")","")
+            if current_digits != PHONE_DIGITS:
+                await phone_inp.scroll_into_view_if_needed(timeout=3000)
+                await phone_inp.click(click_count=3, timeout=3000)
+                await phone_inp.press_sequentially(PHONE_DIGITS, delay=30)
+                print(f"    ✓ phone post-fill (pressSequentially): {PHONE_DIGITS}")
+            else:
+                # Value already correct — just ensure blur to commit React state
+                await phone_inp.scroll_into_view_if_needed(timeout=3000)
+                await phone_inp.click(timeout=3000)
+                print(f"    ✓ phone post-fill: already {PHONE_DIGITS}")
+            await page.keyboard.press("Tab")  # trigger blur to commit
+            await page.wait_for_timeout(300)
 
-async def sign_in(page: Page):
-    print("[AUTH] Signing in...")
-    await page.locator("[data-automation-id='signInLink']").first.click(force=True)
-    await page.wait_for_timeout(1200)
-    e = page.locator("[data-automation-id='email']").first
-    await e.wait_for(state="visible", timeout=8000)
-    await e.click(); await e.type(EMAIL, delay=60)
-    p = page.locator("[data-automation-id='password']").first
-    await p.click(); await p.type(PASSWORD, delay=50)
-    await page.wait_for_timeout(400)
-    await page.locator("[data-automation-id='click_filter']").first.click()
-    for _ in range(25):
+
+
+async def ensure_signed_in(page: Page):
+    """Detect any Workday login wall and auto sign-in (or create account) with stored credentials.
+
+    State-machine approach:
+    - State A (create-account form): verifyPassword + createAccountSubmitButton visible
+      → Try create account first. If "already exists" error → switch to sign-in.
+    - State B (sign-in form): signInSubmitButton visible, no verifyPassword
+      → Fill sign-in. If error → try switching to create account.
+    - signInLink present on create-account page → clicking it goes to State B.
+    - createAccountLink present on sign-in page → clicking it goes to State A.
+    """
+    LOGIN_SELECTORS = [
+        "[data-automation-id='email']",
+        "[data-automation-id='signInSubmitButton']",
+        "[data-automation-id='signInLink']",
+        "[data-automation-id='createAccountSubmitButton']",
+    ]
+    is_login_wall = any([await page.locator(sel).count() > 0 for sel in LOGIN_SELECTORS])
+    if not is_login_wall:
+        return
+
+    # Determine credentials — per-tenant first, fallback to personal_info
+    current_url = page.url
+    tenant = ""
+    import re as _re2
+    m = _re2.search(r'https://([^.]+)\.wd\d+\.myworkdayjobs\.com', current_url)
+    if m:
+        tenant = m.group(1)
+    workday_accounts = LIBRARY.get("workday_accounts", {})
+    creds = workday_accounts.get(tenant) or workday_accounts.get("default") or {}
+    use_email    = creds.get("email", EMAIL)
+    use_password = creds.get("password", PASSWORD)
+    print(f"[AUTH] Login wall detected (tenant={tenant!r}) — attempting auth with {use_email}...")
+
+    async def _wait_past_login(timeout_s=25):
+        """Wait until login wall disappears or next-step button appears. Returns True if passed."""
+        for _ in range(timeout_s):
+            await page.wait_for_timeout(1000)
+            if await page.locator("[data-automation-id='pageFooterNextButton']").count(): return True
+            if await page.locator("[data-automation-id='adventureButton']").count(): return True
+            # If neither email nor sign-in form is present, we've moved past login
+            has_email = await page.locator("[data-automation-id='email']").count()
+            has_signin = await page.locator("[data-automation-id='signInSubmitButton']").count()
+            has_create = await page.locator("[data-automation-id='createAccountSubmitButton']").count()
+            if not has_email and not has_signin and not has_create:
+                return True
+        return False
+
+    async def _get_auth_error():
+        err_el = page.locator("[data-automation-id='errorMessage']")
+        if await err_el.count():
+            return (await err_el.first.inner_text()).strip()
+        return ""
+
+    async def _do_sign_in() -> bool:
+        """Fill sign-in form (assumes signInSubmitButton is visible). Returns True on success."""
+        print("[AUTH] Attempting sign-in (filling email/password)...")
+        email_el = page.locator("[data-automation-id='email']").first
+        pw_el    = page.locator("[data-automation-id='password']").first
+        try:
+            await email_el.wait_for(state="visible", timeout=8000)
+            await email_el.click(click_count=3); await email_el.fill(use_email)
+            await pw_el.wait_for(state="visible", timeout=5000)
+            await pw_el.click(click_count=3); await pw_el.fill(use_password)
+            await page.wait_for_timeout(400)
+            # click_filter div intercepts pointer events for the actual submit button.
+            # Playwright native click works (JS click does NOT trigger form submission headlessly).
+            cf = page.locator("[data-automation-id='click_filter'][aria-label='Sign In']").first
+            if await cf.count():
+                await cf.click()
+            else:
+                # Fallback for tenants without click_filter pattern
+                btns = page.locator("button").all()
+                for b in await btns:
+                    txt = (await b.inner_text()).strip()
+                    auto = await b.get_attribute("data-automation-id") or ""
+                    if txt.lower() == "sign in" and auto != "utilityButtonSignIn":
+                        await b.click(force=True)
+                        break
+            await page.wait_for_timeout(3000)
+            err = await _get_auth_error()
+            if err:
+                print(f"[AUTH] Sign-in error: {err[:120]}")
+                return False
+            passed = await _wait_past_login(timeout_s=15)
+            if passed:
+                print("[AUTH] ✓ Signed in successfully.")
+                # Wait for the application form to fully render before returning
+                await page.wait_for_timeout(3000)
+                return True
+            print("[AUTH] Sign-in: no progress after 15s.")
+            return False
+        except Exception as e:
+            print(f"[AUTH] Sign-in exception: {e}")
+            return False
+
+    async def _do_create_account() -> bool:
+        """Fill create-account form (assumes verifyPassword+createAccountSubmitButton visible). Returns True on success."""
+        print("[AUTH] Attempting create account (filling email/password/verify)...")
+        email_el  = page.locator("[data-automation-id='email']").first
+        pw_el     = page.locator("[data-automation-id='password']").first
+        verify_pw = page.locator("[data-automation-id='verifyPassword']").first
+        expand_btn = page.locator("[data-automation-id='createAccountExpandButton']").first
+        try:
+            await email_el.wait_for(state="visible", timeout=8000)
+            await email_el.click(click_count=3); await email_el.fill(use_email)
+            await pw_el.wait_for(state="visible", timeout=5000)
+            await pw_el.click(click_count=3); await pw_el.fill(use_password)
+            await verify_pw.wait_for(state="visible", timeout=5000)
+            await verify_pw.click(click_count=3); await verify_pw.fill(use_password)
+            # Expand optional fields if present
+            if await expand_btn.count():
+                try: await expand_btn.click(force=True); await page.wait_for_timeout(500)
+                except Exception: pass
+            # Check terms checkbox
+            checkbox = page.locator("[data-automation-id='createAccountCheckbox']").first
+            if await checkbox.count():
+                if not await checkbox.is_checked():
+                    await checkbox.click(force=True); await page.wait_for_timeout(300)
+            await page.wait_for_timeout(400)
+            # click_filter intercepts pointer events; use Playwright native click (JS click won't submit).
+            cf = page.locator("[data-automation-id='click_filter'][aria-label='Create Account']").first
+            if await cf.count():
+                await cf.click()
+                print("[AUTH] Create account submit via: click_filter (Playwright native click)")
+            else:
+                cf2 = page.locator("[data-automation-id='click_filter']").first
+                if await cf2.count():
+                    await cf2.click()
+                    print("[AUTH] Create account submit via: click_filter (first)")
+                else:
+                    btn = page.locator("[data-automation-id='createAccountSubmitButton']").first
+                    await btn.click(force=True)
+                    print("[AUTH] Create account submit via: createAccountSubmitButton")
+            await page.wait_for_timeout(3000)
+            err = await _get_auth_error()
+            if err:
+                print(f"[AUTH] Create account error: {err[:120]}")
+                return False
+            passed = await _wait_past_login(timeout_s=20)
+            if passed:
+                print("[AUTH] ✓ Account created and signed in.")
+                return True
+            print("[AUTH] ✓ Create account submitted (may need email verification).")
+            return True  # optimistic — let main loop detect if something is wrong
+        except Exception as e:
+            print(f"[AUTH] Create account exception: {e}")
+            return False
+
+    # ── Detect current state ──
+    has_verify = await page.locator("[data-automation-id='verifyPassword']").count()
+    has_create_btn = await page.locator("[data-automation-id='createAccountSubmitButton']").count()
+    has_signin_btn = await page.locator("[data-automation-id='signInSubmitButton']").count()
+    has_signin_link = await page.locator("[data-automation-id='signInLink']").count()
+
+    if has_verify and has_create_btn:
+        # ── State A: Create-account form shown ──
+        # Try sign-in first (account may already exist from a previous run)
+        if has_signin_link:
+            try:
+                await page.locator("[data-automation-id='signInLink']").first.click(force=True)
+                await page.wait_for_timeout(1500)
+            except Exception:
+                pass
+        # Attempt sign-in (credentials already registered)
+        if await page.locator("[data-automation-id='signInSubmitButton']").count():
+            if await _do_sign_in():
+                return
+            # Sign-in failed — no registered account yet.
+            # Switch back to Create Account form and ask user to complete it manually.
+            print("[AUTH] ⚠ No existing account found.")
+            ca_link = page.locator("[data-automation-id='createAccountLink']").first
+            if await ca_link.count():
+                try: await ca_link.click(force=True); await page.wait_for_timeout(1500)
+                except Exception: pass
+
+    elif has_signin_btn and not has_verify:
+        # ── State B: Sign-in form only ──
+        if await _do_sign_in():
+            return
+        # Sign-in failed — switch to create account if link present
+        if await page.locator("[data-automation-id='createAccountLink']").count():
+            print("[AUTH] ⚠ Sign-in failed — no account yet.")
+            try:
+                await page.locator("[data-automation-id='createAccountLink']").first.click(force=True)
+                await page.wait_for_timeout(1500)
+            except Exception: pass
+
+    # ── Manual wait: ask user to complete auth in the browser window ──
+    print()
+    print("=" * 60)
+    print("[AUTH] ACTION REQUIRED — Please complete in the browser window:")
+    print(f"       Email: {use_email}")
+    print(f"       Password: {use_password}")
+    print("       Create the account (fill form + submit), then sign in.")
+    print("       Bot will auto-continue once you're past the login page.")
+    print("=" * 60)
+    for _ in range(180):
         await page.wait_for_timeout(1000)
-        if await page.locator("[data-automation-id='pageFooterNextButton']").count(): break
-        if not await page.locator("[data-automation-id='signInSubmitButton']").count(): break
-    await page.wait_for_timeout(1000)
-    await page.reload(wait_until="domcontentloaded")
-    await page.wait_for_timeout(3000)
-    print("[AUTH] ✓ Signed in.")
+        still_login = any([await page.locator(sel).count() > 0
+                           for sel in ["[data-automation-id='signInSubmitButton']",
+                                       "[data-automation-id='email']",
+                                       "[data-automation-id='createAccountSubmitButton']"]])
+        if not still_login:
+            break
+    print("[AUTH] ✓ Auth complete — continuing...")
+    await page.wait_for_timeout(1500)
 
 # ── Add-dialog filler (My Experience modals) ─────────────────────────────────
 
@@ -1974,11 +2210,18 @@ async def exec_skills_field(page: Page, field: dict, skills: list[str]):
 async def handle_my_experience(page: Page):
     print("\n[PAGE] My Experience")
 
-    # Resume upload
-    if await page.locator("input[type='file']").count():
-        await page.locator("input[type='file']").first.set_input_files(RESUME_PATH)
-        await page.wait_for_timeout(2500)
-        print(f"    ✓ resume uploaded")
+    # Resume upload — only if no file already uploaded
+    file_input = page.locator("input[type='file']")
+    if await file_input.count():
+        existing_files = await page.evaluate("""() =>
+            Array.from(document.querySelectorAll('[data-automation-id="file-upload-item-name"]'))
+                .map(el => el.innerText.trim()).filter(Boolean)""")
+        if existing_files:
+            print(f"    ~ resume already uploaded: {existing_files[0]!r} — skipping")
+        else:
+            await file_input.first.set_input_files(RESUME_PATH)
+            await page.wait_for_timeout(2500)
+            print(f"    ✓ resume uploaded")
 
     # Discover add-buttons and their section labels
     add_btns_info = await page.evaluate("""() =>
@@ -2027,13 +2270,113 @@ async def handle_my_experience(page: Page):
 
         # Guard: if entries of this type already exist on page (from a previous call),
         # skip adding new ones to prevent duplicates on retry.
-        # Check for ANY existing form inputs (even empty ones from a failed save) — not just filled ones.
+        # formField-jobTitle / formField-school are reliable automation-ids present
+        # for every WE/EDU entry (both expanded inline forms and collapsed cards).
+        # Also purge blank Workday-initialized rows (fresh application always starts with 1 blank row).
         if section_type == "work":
-            existing_count = await page.evaluate("""() =>
-                document.querySelectorAll('[data-automation-id="jobTitle"]').length""")
+            anchor_auto = "formField-jobTitle"
+            filled_check_js = """() => Array.from(
+                document.querySelectorAll('[data-automation-id="formField-jobTitle"]')
+            ).map(el => {
+                const inp = el.querySelector('input');
+                return inp ? inp.value.trim() : '';
+            })"""
         elif section_type == "edu":
-            existing_count = await page.evaluate("""() =>
-                document.querySelectorAll('[data-automation-id="school"]').length""")
+            anchor_auto = "formField-school"
+            filled_check_js = """() => Array.from(
+                document.querySelectorAll('[data-automation-id="formField-school"]')
+            ).map(el => {
+                const inp = el.querySelector('input');
+                return inp ? inp.value.trim() : '';
+            })"""
+        else:
+            anchor_auto = None
+            filled_check_js = None
+
+        if anchor_auto:
+            # For WE (text inputs): check input.value
+            # For EDU (selectinput): check for selectedItem pill OR input.value
+            if section_type == "work":
+                filled_check_js = """() => Array.from(
+                    document.querySelectorAll('[data-automation-id="formField-jobTitle"]')
+                ).map(el => {
+                    const inp = el.querySelector('input');
+                    return inp ? inp.value.trim() : '';
+                })"""
+            else:  # edu
+                filled_check_js = """() => Array.from(
+                    document.querySelectorAll('[data-automation-id="formField-school"]')
+                ).map(el => {
+                    const pill = el.querySelector('[data-automation-id="selectedItem"]');
+                    if (pill && pill.innerText.trim()) return pill.innerText.trim();
+                    const inp = el.querySelector('input');
+                    return inp ? inp.value.trim() : '';
+                })"""
+
+            entry_values = await page.evaluate(filled_check_js)
+            filled_count = sum(1 for v in entry_values if v)
+            blank_count  = sum(1 for v in entry_values if not v)
+            existing_count = len(entry_values)
+            print(f"  [ADD] '{btn_info['label']}' existing={existing_count} (filled={filled_count} blank={blank_count}), need={len(data_list)}")
+
+            # Delete blank Workday-initialized rows to avoid orphan empty entries causing save errors.
+            # Use JS to find DELETE_charm buttons ONLY within blank rows of this section type
+            # (can't use page.locator.first — WE delete buttons appear before EDU ones in DOM).
+            if blank_count > 0:
+                deleted = await page.evaluate(f"""() => {{
+                    const anchorAuto = '{anchor_auto}';
+                    const rows = Array.from(document.querySelectorAll('[data-automation-id="' + anchorAuto + '"]'));
+                    let deleted = 0;
+                    for (const row of rows) {{
+                        // Determine if this row is blank
+                        let isEmpty = false;
+                        if (anchorAuto === 'formField-jobTitle') {{
+                            const inp = row.querySelector('input');
+                            isEmpty = !inp || inp.value.trim() === '';
+                        }} else {{
+                            // EDU: check for selectedItem pill
+                            const pill = row.querySelector('[data-automation-id="selectedItem"]');
+                            const inp = row.querySelector('input');
+                            isEmpty = !(pill && pill.innerText.trim()) && (!inp || inp.value.trim() === '');
+                        }}
+                        if (!isEmpty) continue;
+                        // Walk up to find the entry container, then find its DELETE_charm
+                        let node = row.parentElement;
+                        let found = false;
+                        for (let i = 0; i < 10 && node && node !== document.body; i++) {{
+                            const del = node.querySelector('[data-automation-id="DELETE_charm"]');
+                            if (del) {{
+                                del.click();
+                                deleted++;
+                                found = true;
+                                break;
+                            }}
+                            node = node.parentElement;
+                        }}
+                        if (!found) break;  // Can't find delete — stop trying
+                    }}
+                    return deleted;
+                }}""")
+                if deleted:
+                    print(f"  [ADD] Deleted {deleted} blank row(s)")
+                    await page.wait_for_timeout(1200)
+                    # Handle any confirmation dialog
+                    for conf_sel in ["button:has-text('Delete')", "button:has-text('Yes')",
+                                     "button:has-text('Confirm')", "button:has-text('Remove')"]:
+                        conf = page.locator(conf_sel).first
+                        if await conf.count() and await conf.is_visible():
+                            await conf.click(timeout=2000)
+                            await page.wait_for_timeout(400)
+                            break
+                    await page.wait_for_timeout(500)
+                    entry_values = await page.evaluate(filled_check_js)
+                    filled_count = sum(1 for v in entry_values if v)
+                    existing_count = len(entry_values)
+                    print(f"  [ADD] After cleanup: existing={existing_count} filled={filled_count}")
+
+            if filled_count >= len(data_list):
+                print(f"  [ADD] '{btn_info['label']}' already fully filled ({filled_count}) — skipping adds")
+                continue
         elif section_type == "lang":
             existing_count = await page.evaluate("""() =>
                 Array.from(document.querySelectorAll('button[data-automation-id="language"]'))
@@ -2041,17 +2384,39 @@ async def handle_my_experience(page: Page):
                         const t = el.textContent || '';
                         return t.trim() !== '' && !t.includes('Select One');
                     }).length""")
+            filled_count = existing_count
+            blank_count = 0
+            if existing_count >= len(data_list):
+                print(f"  [ADD] '{btn_info['label']}' already has {existing_count} entries — skipping adds")
+                continue
+            print(f"  [ADD] '{btn_info['label']}' existing={existing_count}, need={len(data_list)}")
         else:
-            existing_count = 0
-
-        if existing_count >= len(data_list):
-            print(f"  [ADD] '{btn_info['label']}' already has {existing_count} entries — skipping adds")
-            continue
+            filled_count = 0
+            blank_count = 0
 
         for entry_idx, entry in enumerate(data_list):
             # Re-query add-buttons each iteration — DOM re-renders after each dialog close
             # and old locator references become detached/stale.
             add_btns = page.locator("[data-automation-id='add-button']")
+
+            entry_label = entry.get("role") or entry.get("degree_type") or entry.get("language", "entry")
+            company = entry.get("company") or (entry.get("institution_variants",[""])[0]) or ""
+            dialog_label = f"{btn_info['label']}: {entry_label} at {company}"
+            print(f"\n  [ADD {entry_idx+1}/{len(data_list)}] '{btn_info['label']}' → {dialog_label}")
+
+            # Count all scannable fields BEFORE clicking Add
+            fields_before = await page.evaluate(SCAN_JS, None)
+            count_before = len(fields_before)
+
+            # If a blank slot exists for this entry index, fill it directly (no Add click needed).
+            # Workday pre-populates 1 blank row on fresh applications; it has no DELETE button
+            # so we can't remove it — we must fill it in-place instead.
+            if entry_idx < blank_count:
+                print(f"  [ADD] Filling existing blank slot (no Add click needed)")
+                await fill_add_dialog(page, dialog_label, entry=entry, section_type=section_type,
+                                      count_before=count_before, fields_before=fields_before)
+                await page.wait_for_timeout(500)
+                continue
 
             # Wait for buttons to be stable (Workday re-renders after dialog saves)
             for _stab in range(8):
@@ -2063,15 +2428,6 @@ async def handle_my_experience(page: Page):
             if btn_info["index"] >= total:
                 print(f"  [ADD] Button index {btn_info['index']} out of range ({total}), stopping")
                 break
-
-            entry_label = entry.get("role") or entry.get("degree_type") or entry.get("language", "entry")
-            company = entry.get("company") or (entry.get("institution_variants",[""])[0]) or ""
-            dialog_label = f"{btn_info['label']}: {entry_label} at {company}"
-            print(f"\n  [ADD {entry_idx+1}/{len(data_list)}] '{btn_info['label']}' → {dialog_label}")
-
-            # Count all scannable fields BEFORE clicking Add
-            fields_before = await page.evaluate(SCAN_JS, None)
-            count_before = len(fields_before)
 
             btn = add_btns.nth(btn_info["index"])
             # Retry click if element detaches mid-action (Workday re-render race)
@@ -2135,11 +2491,12 @@ async def handle_my_experience(page: Page):
             saved = True
             break
         if _save_attempt < 2:
-            # Re-scan and re-fill only date spinbutton fields that may have been
-            # reset by React re-renders.  We can't re-run entry_answer without
-            # section/entry context, so iterate known WE+EDU entries by order.
-            print(f"  [RETRY {_save_attempt+1}] Re-filling date spinbutton fields...")
+            # Re-scan and re-fill date spinbutton fields AND empty required dropdowns
+            # that may have been reset by React re-renders.
+            print(f"  [RETRY {_save_attempt+1}] Re-filling date spinbutton fields and empty dropdowns...")
             retry_fields = await page.evaluate(SCAN_JS, None)
+
+            # ── Re-fill date spinbuttons ──
             date_fields_rf = [rf for rf in retry_fields
                               if rf.get("tag") == "input"
                               and rf.get("label","").strip("* ").lower() in ("month","year","day")]
@@ -2174,6 +2531,23 @@ async def handle_my_experience(page: Page):
                     await page.wait_for_timeout(200)
                     await exec_text(page, yf, yv)
                     await page.wait_for_timeout(200)
+
+            # ── Re-fill empty required button-dropdowns (e.g. Degree) ──
+            # These can be reset when React re-renders after adding entries.
+            empty_drops = [rf for rf in retry_fields
+                           if rf.get("tag") == "button"
+                           and "select one" in rf.get("val","").lower()
+                           and rf.get("label","")]
+            for drop_f in empty_drops:
+                # Find an EDU entry whose degree matches this label context
+                for ent in (EDU or []):
+                    val = entry_answer(drop_f, ent, "edu")
+                    if val:
+                        print(f"  [RETRY] Re-filling empty dropdown '{drop_f['label']}' = {val!r}")
+                        await exec_button_dropdown(page, drop_f, val)
+                        await page.wait_for_timeout(500)
+                        break
+
             await page.wait_for_timeout(1000)
     if not saved:
         print(f"  [ERR] handle_my_experience: save failed after 3 attempts — stopping")
@@ -2380,7 +2754,12 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
         page = await ctx.new_page()
 
         print("[NAV] Loading job listing...")
-        await page.goto(job_url, wait_until="domcontentloaded", timeout=30000)
+        try:
+            await page.goto(job_url, wait_until="domcontentloaded", timeout=30000)
+        except Exception as e:
+            print(f"[NAV] page.goto failed: {e}")
+            await page.screenshot(path=str(ARTIFACTS / "goto_failed.png"))
+            raise
         await page.wait_for_timeout(3000)
 
         # Scrape salary range from the listing page and inject into PROFILE_SUMMARY
@@ -2398,44 +2777,78 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
         _profile_data["job_listing_salary"] = int(listing_salary)
         _mod.PROFILE_SUMMARY = json.dumps(_profile_data, indent=2)
 
-        # Wait up to 60s for the Apply button (headed mode may show sign-in overlay)
-        try:
-            await page.locator("[data-automation-id='adventureButton']").first.wait_for(state="visible", timeout=60000)
-        except Exception:
-            pass
-        apply_btn = page.locator("[data-automation-id='adventureButton']").first
-        try:
-            await apply_btn.click(force=True, timeout=10000)
-        except Exception:
-            await page.evaluate("() => { const b = document.querySelector('[data-automation-id=\\'adventureButton\\']'); if(b) b.click(); }")
-        await page.wait_for_timeout(1500)
+        # No proactive sign-in on listing page — navigate directly to /apply URL.
+        # Tenants that require auth will redirect to their sign-in page inside the form flow,
+        # which the main page loop detects and handles via ensure_signed_in.
+        await ensure_signed_in(page)  # handle any login wall already on listing page
 
-        # After clicking Apply, sign-in may be required before "Apply Manually" appears
-        if await page.locator("[data-automation-id='signInLink']").count():
-            await sign_in(page)
-            await page.wait_for_timeout(2000)
-            # Re-click Apply after sign-in if we're back on the listing page
-            if await page.locator("[data-automation-id='adventureButton']").count():
-                try:
-                    await page.locator("[data-automation-id='adventureButton']").first.click(force=True, timeout=10000)
-                except Exception:
-                    await page.evaluate("() => { const b = document.querySelector('[data-automation-id=\\'adventureButton\\']'); if(b) b.click(); }")
-                await page.wait_for_timeout(1500)
+        # Try to find and click the Apply button — Workday uses different selectors per tenant:
+        # RH/standard: data-automation-id="adventureButton"
+        # Cox/custom:   a plain <button> or <a> with text "Apply" near the job title
+        APPLY_SELECTORS = [
+            "[data-automation-id='adventureButton']",
+            "a[href*='startApplication']",
+            "button:has-text('Apply')",
+            "a:has-text('Apply Now')",
+            "a:has-text('Apply')",
+        ]
+        apply_clicked = False
+        for sel in APPLY_SELECTORS:
+            try:
+                loc = page.locator(sel).first
+                await loc.wait_for(state="visible", timeout=8000)
+                # If it's a link with href, navigate directly (avoids JS auth issues)
+                href = await loc.get_attribute("href")
+                if href and href.startswith("http"):
+                    await page.goto(href, wait_until="domcontentloaded", timeout=30000)
+                else:
+                    await loc.click(force=True)
+                apply_clicked = True
+                print(f"  [NAV] Clicked Apply via selector: {sel}")
+                break
+            except Exception:
+                continue
+        if not apply_clicked:
+            print("  [NAV] No Apply button found — trying JS fallback")
+            await page.evaluate("""() => {
+                const btn = document.querySelector('[data-automation-id="adventureButton"]') ||
+                    Array.from(document.querySelectorAll('button,a')).find(e =>
+                        /^apply$/i.test(e.innerText?.trim()) || /^apply now$/i.test(e.innerText?.trim()));
+                if (btn) btn.click();
+            }""")
+        await page.wait_for_timeout(2000)
 
+        # After clicking Apply, sign-in may be required
+        await ensure_signed_in(page)
+        # Re-click Apply if we're back on the listing page after sign-in
+        for sel in APPLY_SELECTORS:
+            try:
+                loc = page.locator(sel).first
+                if await loc.count():
+                    await loc.click(force=True)
+                    print(f"  [NAV] Re-clicked Apply after sign-in via: {sel}")
+                    break
+            except Exception:
+                continue
+        await page.wait_for_timeout(2000)
+
+        # Navigate via "Apply Manually" link (standard Workday tenants)
         am = page.locator("[data-automation-id='applyManually']").first
         try:
-            await am.wait_for(state="visible", timeout=15000)
+            await am.wait_for(state="visible", timeout=10000)
+            href = await am.get_attribute("href")
+            if href:
+                await page.goto(href, wait_until="domcontentloaded", timeout=30000)
+            else:
+                await am.click(force=True)
+            print("  [NAV] Navigated via applyManually")
         except Exception:
-            pass
-        href = await am.get_attribute("href", timeout=15000)
-        if href:
-            await page.goto(href, wait_until="domcontentloaded", timeout=30000)
-        else:
-            await am.click(force=True)
+            print("  [NAV] No applyManually — assuming direct form navigation")
+            await page.screenshot(path=str(ARTIFACTS / "after_apply_click.png"))
         await page.wait_for_timeout(2500)
 
-        if await page.locator("[data-automation-id='signInLink']").count():
-            await sign_in(page)
+        # Final login check after navigation to application form
+        await ensure_signed_in(page)
 
         # Wait for application form to fully load (progress bar indicates form is ready)
         try:
@@ -2447,10 +2860,36 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
         for page_num in range(1, 12):
             await page.wait_for_timeout(1500)
             heading = await get_heading(page)
+            # If heading is empty, the form may still be loading — wait up to 8s for it
+            if not heading:
+                for _ in range(8):
+                    await page.wait_for_timeout(1000)
+                    heading = await get_heading(page)
+                    if heading:
+                        break
             print(f"\n{'='*60}\n[PAGE {page_num}] {heading}\n{'='*60}")
 
-            if not heading or "My Tasks" in heading:
+            if "My Tasks" in (heading or ""):
                 print("[BOT] ✓ Application complete."); break
+            if not heading:
+                # Still blank after waiting — take screenshot and break to avoid loop
+                await page.screenshot(path=str(ARTIFACTS / f"blank_heading_p{page_num}.png"))
+                print(f"  [NAV] Blank heading after 8s — screenshot saved, stopping")
+                break
+
+            # Sign-in page inside the application form — use ensure_signed_in
+            if any(kw in heading.lower() for kw in ("sign in", "create account", "log in", "signin")):
+                print(f"  → Sign-in page inside application — attempting sign-in")
+                await ensure_signed_in(page)
+                continue  # re-read heading after sign-in
+
+            # Workday error page ("Something went wrong") — reload and retry
+            body_text = await page.evaluate("() => document.body.innerText")
+            if "something went wrong" in body_text.lower() and "please refresh" in body_text.lower():
+                print(f"  → Workday error page detected — reloading...")
+                await page.reload(wait_until="domcontentloaded")
+                await page.wait_for_timeout(4000)
+                continue
 
             ss = ARTIFACTS / f"run_{page_num:02d}_{re.sub(r'[^a-zA-Z0-9]','_',heading)[:30]}.png"
             await page.screenshot(path=str(ss))
@@ -2481,7 +2920,24 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
                     print("  ⚠️  REVIEW — all fields filled. Check the browser.")
                     print("="*60)
                     review_shot = str(ARTIFACTS / "review_page.png")
-                    await page.screenshot(path=review_shot)
+                    # Scroll review content to top, then capture multiple vertical slices
+                    # (Workday puts content in an inner scrollable div, not window)
+                    scroll_js = """() => {
+                        const inner = document.querySelector('[data-automation-id="scroll-container"]')
+                            || document.querySelector('main')
+                            || document.querySelector('[role="main"]')
+                            || document.scrollingElement;
+                        if (inner) inner.scrollTop = 0;
+                        window.scrollTo(0, 0);
+                    }"""
+                    await page.evaluate(scroll_js)
+                    await page.wait_for_timeout(300)
+                    # Expand viewport to 3000px tall so more content is visible in one shot
+                    orig_vp = page.viewport_size or {"width": 1280, "height": 900}
+                    await page.set_viewport_size({"width": orig_vp["width"], "height": 3000})
+                    await page.wait_for_timeout(400)
+                    await page.screenshot(path=review_shot, full_page=True)
+                    await page.set_viewport_size(orig_vp)
                     print(f"  Screenshot saved: {review_shot}")
                     try:
                         await asyncio.to_thread(input, "  → Press [Enter] to submit, Ctrl+C to abort: ")
@@ -2489,6 +2945,13 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
                         print("  ✓ Submitted!")
                     except (EOFError, KeyboardInterrupt):
                         print(f"  ⚠️  Non-interactive mode — NOT submitting. Review at {review_shot}")
+                        if headed:
+                            # Keep browser open so user can inspect the review page
+                            print("  → Browser staying open. Press Ctrl+C to close.")
+                            try:
+                                await asyncio.to_thread(input, "  → Press [Enter] to close browser: ")
+                            except (EOFError, KeyboardInterrupt):
+                                pass
                     break
 
                 elif has_add_buttons:
@@ -2522,7 +2985,18 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
                     # Generic page (My Information, Application Questions, custom pages)
                     # smart_fill_page + save handles all standard form-field pages
                     print(f"  → Generic form page — smart fill")
-                    await smart_fill_page(page, heading)
+                    # Wait for form to fully render (important after sign-in when React is still hydrating)
+                    for _wait_attempt in range(5):
+                        await smart_fill_page(page, heading)
+                        # If fields were found and filled, break; otherwise wait and retry
+                        nxt = await page.locator("[data-automation-id='pageFooterNextButton']").count()
+                        flds = await page.evaluate(SCAN_JS, None)
+                        fillable = [f for f in flds if f.get("tag") in ("input","textarea","button","select")
+                                    and not f.get("label","").lower().startswith("search")]
+                        if fillable or nxt:
+                            break
+                        print(f"  [NAV] 0 fillable fields found — waiting for page to load (attempt {_wait_attempt+1}/5)...")
+                        await page.wait_for_timeout(3000)
                     ok = await save_and_continue(page)
                     if not ok:
                         # Validation revealed hidden fields (e.g. RH radio on My Information)
@@ -2594,4 +3068,9 @@ if __name__ == "__main__":
         _mod.DEEPSEEK_KEY = "sim"
         print("[SIM-DS] DeepSeek simulation mode active — using rule-based answers via DS code path")
 
-    asyncio.run(main(job_url, headed=headed))
+    import traceback
+    try:
+        asyncio.run(main(job_url, headed=headed))
+    except Exception:
+        traceback.print_exc()
+        sys.exit(1)

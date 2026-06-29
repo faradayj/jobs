@@ -40,11 +40,11 @@
       ],
       "major_variants": [
         "Computer and Information Science",
-        "Computer Science",
         "Computer Science Engineering",
-        "CSE"
+        "CSE",
+        "Computer Science"
       ],
-      "major_search_term": "Computer and Information Science",
+      "major_search_term": "Computer Science",
       "start_month": "August",
       "start_year": "2025",
       "end_month": "December",
@@ -66,11 +66,11 @@
         "Bachelor's"
       ],
       "major_variants": [
+        "Computer Science",
         "Computer and Information Science",
-        "Data Science",
-        "Computer Science"
+        "Data Science"
       ],
-      "major_search_term": "Computer and Information Science",
+      "major_search_term": "Data Science",
       "start_month": "September",
       "start_year": "2020",
       "end_month": "March",
@@ -241,5 +241,15 @@
       "proficiency": "Intermediate"
     }
   ],
-  "resume_path": "agent_test/joshua_li_resume_6_2026.pdf"
+  "resume_path": "agent_test/joshua_li_resume_6_2026.pdf",
+  "workday_accounts": {
+    "cox": {
+      "email": "joshualingli@gmail.com",
+      "password": "ManekoNeki0!"
+    },
+    "default": {
+      "email": "joshualingli@gmail.com",
+      "password": "ManekoNeki0!"
+    }
+  }
 }
