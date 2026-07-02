@@ -3,7 +3,6 @@
     "first_name": "Joshua",
     "last_name": "Li",
     "email": "joshualingli@gmail.com",
-    "password": "ManekoNeki0!",
     "phone": "(480) 616-8194",
     "address": "800 S Abel St, Unit 506",
     "city": "Milpitas",
@@ -12,7 +11,13 @@
     "country": "United States",
     "github": "https://github.com/faradayj",
     "linkedin": "https://www.linkedin.com/in/joshualingli",
-    "portfolio": ""
+    "portfolio": "",
+    "preferred_locations": [
+      "California",
+      "San Francisco",
+      "San Jose",
+      "Remote"
+    ]
   },
   "role_preferences": {
     "target_titles": [
@@ -22,7 +27,9 @@
     ],
     "recent_work_context": "Training machine learning models based on onboarding graph linkage vector features.",
     "anticipated_start_date_preference": "One month out from the current date",
-    "location_and_relocation_rule": "The candidate is open to relocate anywhere in the United States. If the form presents a checkbox list of multiple locations to select from, select ALL of them."
+    "location_and_relocation_rule": "The candidate is open to relocating anywhere in the United States or Canada. For any yes/no 'willing to relocate' question, answer Yes. For location-selection widgets, defer to routing_priorities.location_selection_execution_rule (multi-select location lists: select ALL options).",
+    "work_arrangement_preference": "Open to onsite, hybrid, or remote — will accept whatever the role requires.",
+    "work_arrangement_rule": "Never disqualify or answer negatively on a work-arrangement question. The candidate accepts onsite, hybrid, or remote as required by the role; a remote/hybrid preference must not translate into declining an onsite role."
   },
   "education_history": [
     {
@@ -48,9 +55,10 @@
       "start_month": "August",
       "start_year": "2025",
       "end_month": "December",
-      "end_year": "2027",
+      "end_year": "2026",
       "gpa": "4.0",
-      "current_status": "Still attending"
+      "current_status": "Still attending",
+      "institution_city": "Tempe, AZ"
     },
     {
       "institution_variants": [
@@ -76,7 +84,8 @@
       "end_month": "March",
       "end_year": "2025",
       "gpa": "3.91",
-      "current_status": "Graduated"
+      "current_status": "Graduated",
+      "institution_city": "La Jolla, CA"
     }
   ],
   "work_experience": [
@@ -156,36 +165,78 @@
       "Indeed",
       "Job Board",
       "Other"
-    ]
+    ],
+    "holds_security_clearance": "No",
+    "security_clearance_level": "None",
+    "eligible_to_obtain_clearance": "Yes",
+    "convicted_of_felony": "No",
+    "criminal_history": "No",
+    "currently_employed": "Yes",
+    "may_contact_current_employer": "No",
+    "current_or_former_federal_employee": "No",
+    "conflicting_ip_or_inventions": "No",
+    "willing_to_travel": "Yes",
+    "max_travel_percentage": "100%",
+    "willing_to_work_shifts": "Yes",
+    "can_perform_essential_functions": "Yes"
   },
   "routing_priorities": {
-    "contextual_citizenship_and_export_rules": "Determine whether the job listing is based in the US or Canada. If the role is located in the US, select 'United States of America (USA)' for citizenship and export control fields. If the role is located in Canada, act entirely as a Canadian native: select 'Canada' for citizenship and 'Canada' for export licensing country fields.",
-    "us_location_priority_ladder": [
-      "MATCH_LISTING_LOCATION_FIRST",
-      "San Francisco, CA",
-      "Bay Area (San Jose, San Francisco, Milpitas)",
-      "Arizona (AZ)",
+    "contextual_citizenship_and_export_rules": "The candidate is a dual US and Canadian citizen and a US Person for ITAR/EAR purposes, fully authorized in both countries. Derive the job's country from job_listing_locations: if any location is in Canada AND none is in the US, treat as Canada-based; otherwise US-based (default US when empty/ambiguous). For US roles pick the option representing the United States (match any of 'United States', 'United States of America', 'USA', 'US') for citizenship/nationality/export-control fields; for Canada roles pick the Canada option. Always select the actual option text present — do not emit a fixed string. Do NOT invent Canadian education or work history — the profile is accurate for both countries.",
+    "onsite_us_location_priority_ladder": [
+      "Arizona (Phoenix, Tempe, Scottsdale, AZ)",
+      "Bay Area (San Francisco, San Jose, Milpitas, Oakland, Palo Alto, Sunnyvale, Mountain View, Redwood City, Menlo Park, Santa Clara)",
+      "Seattle / Bellevue, WA",
+      "New York, NY / New York City",
+      "Boston, MA",
+      "Denver / Boulder, CO",
       "Los Angeles, CA",
       "San Diego, CA",
-      "California (Other)",
-      "Seattle, WA",
-      "New York, NY",
-      "Chicago, IL",
+      "Austin, TX",
+      "Washington DC / Arlington, VA / Northern Virginia",
+      "Dallas, TX / Chicago, IL",
       "Anywhere else in the United States",
+      "Toronto, ON / Canada",
+      "Vancouver, BC / Canada",
       "Any location in Canada"
     ],
-    "canada_location_priority_ladder": [
-      "MATCH_LISTING_LOCATION_FIRST",
-      "Vancouver, BC",
-      "Any location in Canada",
-      "San Francisco, CA",
-      "Arizona (AZ)"
+    "remote_us_location_priority_ladder": [
+      "Bay Area (San Francisco, San Jose, Milpitas, Oakland, Palo Alto, Sunnyvale, Mountain View, Redwood City, Menlo Park, Santa Clara)",
+      "Arizona (Phoenix, Tempe, Scottsdale, AZ)",
+      "Seattle / Bellevue, WA",
+      "New York, NY / New York City",
+      "Boston, MA",
+      "Denver / Boulder, CO",
+      "Los Angeles, CA",
+      "San Diego, CA",
+      "Austin, TX",
+      "Washington DC / Arlington, VA / Northern Virginia",
+      "Dallas, TX / Chicago, IL",
+      "Anywhere else in the United States",
+      "Toronto, ON / Canada",
+      "Vancouver, BC / Canada",
+      "Any location in Canada"
     ],
-    "location_selection_execution_rule": "When resolving a relocation or location drop-down field: 1. Evaluate if any option in the webpage drop-down matches the exact city/location stated in the active job listing page text. If a match exists, prioritize and select that option. 2. If the listing location is not an option, use the corresponding country ladder (US or Canada) to find and select the highest available fallback match present in the webpage options list."
+    "onsite_canada_location_priority_ladder": [
+      "Toronto, ON",
+      "Vancouver, BC",
+      "Montreal, QC",
+      "Any location in Canada",
+      "Arizona (Phoenix, Tempe, AZ)",
+      "Bay Area (San Francisco, San Jose)"
+    ],
+    "remote_canada_location_priority_ladder": [
+      "Toronto, ON",
+      "Vancouver, BC",
+      "Montreal, QC",
+      "Any location in Canada",
+      "Bay Area (San Francisco, San Jose)",
+      "Arizona (Phoenix, Tempe, AZ)"
+    ],
+    "location_selection_execution_rule": "Single-select location dropdowns — follow this logic in order: (0) REMOTE CHECK: if any dropdown option matches Remote/Virtual/Work-from-Home/Remote-US/Remote-Canada, ALWAYS pick it first regardless of anything else. (1) LADDER SELECTION: determine which ladder to use based on the JOB LISTING ITSELF — if job_listing_locations contains any remote/virtual indicator OR the listing title/type is flagged remote-eligible, use the remote_* ladder; if the listing is strictly onsite, use the onsite_* ladder. Combine this with job country (derived per contextual_citizenship_and_export_rules; default US). This gives four possible ladders: remote_us, onsite_us, remote_canada, onsite_canada. (2) LISTING MATCH: within the chosen ladder, collect dropdown options that fuzzy-match any location in job_listing_locations and pick the highest-ranked matched option. (3) LADDER FALLBACK: if no listing location matched any dropdown option, walk the chosen ladder top-to-bottom and pick the highest-ranked entry whose keywords appear in a dropdown option. Multi-select/checkbox location lists: select ALL available options."
   },
   "compensation_rules": {
     "baseline_target_pay": "140000",
-    "range_midpoint_rule": "If the job description lists an explicit salary range corresponding to the primary target location (prioritizing the San Francisco / California tier if multiple states are listed), calculate the exact mathematical midpoint between the minimum and maximum salary boundary numbers. Return that calculated midpoint value formatted as a rounded integer."
+    "range_midpoint_rule": "For desired-salary fields: if job_listing_salary is provided (injected at runtime), use it as the source of truth — dropdown of ranges: pick the option containing or closest to that value; free number field: use its midpoint as a rounded integer. If job_listing_salary is null but the description contains an explicit range, use the range tied to the highest-cost listed location (prefer San Francisco / California tier when multiple shown) and compute the exact min-max midpoint as a rounded integer. If no range is available, use compensation_rules.baseline_target_pay."
   },
   "regulatory_self_identification": {
     "primary_demographic_action": "Decline To Self Identify",
@@ -194,11 +245,7 @@
     "fallback_race": "Asian",
     "veteran_status_selection": "I am not a protected veteran",
     "disability_answer": "yes",
-    "disability_status_rule": "Select 'Yes, I have a disability, or have had one in the past' because standard regulatory forms (Form CC-305) explicitly include conditions like depression and ADHD within their self-identification guidelines."
-  },
-  "file_attachments": {
-    "resume_absolute_path": "/Users/joshua.li/Documents/etc/jobs/agent_test/joshua_li_resume_6_2026.pdf",
-    "cover_letter_absolute_path": ""
+    "disability_status_rule": "Answer affirmative on disability self-identification: choose whatever option indicates the candidate has (or previously had) a disability — i.e. the 'Yes' choice on Form CC-305, whatever its exact wording (any option beginning with 'Yes' referencing having/having had a disability). Never pick 'No' or 'I do not wish to answer'. Rationale: conditions such as depression and ADHD fall within CC-305 guidelines."
   },
   "skills": [
     "Python Programming",
@@ -249,19 +296,16 @@
       "proficiency": "Intermediate"
     }
   ],
-  "resume_path": "agent_test/joshua_li_resume_6_2026.pdf",
+  "resume_path": "data/resume.pdf",
   "workday_accounts": {
     "cox": {
-      "email": "joshualingli@gmail.com",
-      "password": "ManekoNeki0!"
+      "email": "joshualingli@gmail.com"
     },
     "default": {
-      "email": "joshualingli@gmail.com",
-      "password": "ManekoNeki0!"
+      "email": "joshualingli@gmail.com"
     },
     "roberthalf": {
-      "email": "joshualingli@gmail.com",
-      "password": "ManekoNeki0!"
+      "email": "joshualingli@gmail.com"
     }
   },
   "workday_qa_examples": [
@@ -273,12 +317,12 @@
     {
       "question": "Are you legally authorized to work in the United States?",
       "answer": "Yes",
-      "notes": "Authorized on OPT/EAD"
+      "notes": "US and Canadian citizen — fully authorized, no restrictions"
     },
     {
       "question": "Will you require sponsorship for employment visa status (H-1B, F-1 OPT, etc.)?",
       "answer": "No",
-      "notes": "Currently on OPT, no sponsorship needed for duration of OPT"
+      "notes": "Citizen of both the US and Canada — no sponsorship ever required"
     },
     {
       "question": "Have you ever been terminated or asked to resign from any previous employment?",
@@ -303,7 +347,7 @@
     {
       "question": "Background check and drug test consent",
       "answer": "I understand and consent to the requirement stated if extended an offer of employment.",
-      "notes": "Matches exact Cox option text; other tenants may use shorter phrasing like 'I understand and consent'"
+      "notes": "Select the affirmative consent option whatever its exact wording (e.g. 'I understand and consent to the requirement...' or shorter 'I understand and consent'); never decline."
     },
     {
       "question": "How did you hear about us? / How did you find this job?",
@@ -337,6 +381,48 @@
       "question": "Do you agree to the Terms and Conditions / privacy policy?",
       "answer": "Yes / I agree",
       "notes": "Always agree to T&C to proceed"
+    },
+    {
+      "question": "Do you currently hold a security clearance? (e.g. SECRET, L, TS/SCI, Top Secret)",
+      "answer": "No",
+      "notes": "Candidate holds NO active clearance of any level. If options list specific clearance levels, pick the 'No' / 'I do not hold a clearance' option — NEVER any 'Yes, I hold...' option. Candidate IS a US citizen and eligible to obtain a clearance if sponsored by an employer, but does not currently hold one."
+    },
+    {
+      "question": "Are you eligible to obtain a security clearance?",
+      "answer": "Yes",
+      "notes": "US citizen — eligible to obtain a clearance if sponsored. Distinct from currently holding one, which is No."
+    },
+    {
+      "question": "Have you ever been convicted of a felony or criminal offense?",
+      "answer": "No"
+    },
+    {
+      "question": "Are you currently employed? May we contact your current employer?",
+      "answer": "Currently employed — please do not contact my current employer.",
+      "notes": "Works at BILL (San Jose, CA). For 3-way option sets, pick the option meaning 'employed / do NOT contact current employer'. Prior employers may be contacted freely."
+    },
+    {
+      "question": "Are you a current or former federal government employee?",
+      "answer": "No, I have never been a federal government employee.",
+      "notes": "For option sets offering 'A current federal employee' / 'A former federal employee' / 'Not a current or former federal employee', pick 'Not a current or former federal employee'."
+    },
+    {
+      "question": "Are you willing to travel for this role? What percentage of travel is acceptable?",
+      "answer": "Yes, up to 100%.",
+      "notes": "Candidate accepts any travel requirement including full relocation. For percentage dropdowns pick the highest available option (100% or closest)."
+    },
+    {
+      "question": "Are you willing to work shifts, nights, weekends, or be on-call?",
+      "answer": "Yes",
+      "notes": "Candidate accepts any schedule requirement to maximize role eligibility."
+    },
+    {
+      "question": "Do you have friends, acquaintances, or professional colleagues currently employed at this company?",
+      "answer": "No"
+    },
+    {
+      "question": "Do you own intellectual property, patents, or prior inventions that could conflict with this role?",
+      "answer": "No"
     }
   ]
 }

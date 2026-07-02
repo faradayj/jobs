@@ -1,20 +1,26 @@
-agent_test/.env
-agent_test/artifacts
-agent_test/__pycache__
+# Secrets + ephemeral data
+data/.env
+data/jobs.db
+
+# Build output
+artifacts/
 __pycache__/
+*.pyc
+*.pyo
+
+# OS
 .DS_Store
 
-# Virtual environment & Editor configs
+# Editor + tooling
 .venv/
 .vscode/
 
-# Playwright browser user profiles
-agent_test/playwright_user_dir_keyboard/
-agent_test/playwright_user_dir_skills/
-agent_test/playwright_user_dir_skills_temp/
-agent_test/playwright_user_dir_systematic/
+# Playwright browser profiles (if created)
+playwright_user_dir_*/
 
-# Temporary test scripts
-agent_test/v3_56d8442_test.py
-
-
+# Keep tracked (do NOT ignore):
+# data/jobs_tracker.csv   ← source of truth for job applications
+# data/jobs_details.json  ← evaluation output
+# data/library.json       ← candidate profile
+# data/resume.pdf         ← résumé (tracked; ask user if they prefer to ignore it)
+# src/*.py                ← all source code

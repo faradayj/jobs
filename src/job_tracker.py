@@ -1,3 +1,51 @@
+"""
+Simplify Jobs Aggregator & Match Tracker
+=========================================
+Tracks, evaluates, and applies to new-grad software jobs scraped from the
+SimplifyJobs/New-Grad-Positions GitHub repository.
+
+TYPICAL WORKFLOW
+----------------
+  1. python3 job_tracker.py ingest
+       Pull latest job list, mark closed/removed jobs.
+
+  2. python3 job_tracker.py evaluate --limit -1
+       Scrape + score pending jobs with DeepSeek (requires DEEPSEEK_API_KEY in .env).
+       Use --dry-run to validate scraping WITHOUT calling DeepSeek.
+
+  3. python3 job_tracker.py list --priority 1
+       Show all Priority-1 (strongest match) eligible jobs.
+
+  4. python3 job_tracker.py apply-loop
+       Interactively launch the Workday / Greenhouse bot for each eligible job.
+
+COMMANDS
+--------
+  ingest        Download latest README from SimplifyJobs, insert new jobs,
+                mark removed/closed listings.
+
+  evaluate      Scrape job descriptions + score fit with DeepSeek.
+    --limit N       Jobs to process (default 10, -1 = all pending).
+    --dry-run       Scrape only — skip DeepSeek calls (no API key needed).
+
+  status        Print count summary grouped by status.
+
+  list          List eligible jobs sorted by fit score.
+    --priority 1|2|3  Filter by priority score (default 1 = strongest match).
+
+  apply         Mark a single job as Applied.
+    --id N          Job ID to mark (required).
+
+  apply-loop    Step through eligible jobs and optionally launch the applicator.
+
+  csv           Re-export DB → jobs_tracker.csv + jobs_details.json.
+
+OUTPUTS
+-------
+  jobs_tracker.csv    Apply URL first column, then Company / Role / Status / etc.
+  jobs_details.json   Full descriptions + core_alignments / technical_gaps per URL.
+"""
+
 import os
 import sys
 import json
@@ -5,12 +53,17 @@ import sqlite3
 import re
 import asyncio
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
+
+# Import shared Chrome-path helper from app_common
+sys.path.insert(0, str(Path(__file__).parent))
+from app_common import _find_chrome, DATA_DIR
 
 # Force UTF-8 encoding on standard output/error
 if sys.platform == "win32":
@@ -22,62 +75,79 @@ else:
     sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
 # Load environment variables from .env file
-env_path = Path(__file__).parent / ".env"
+env_path = DATA_DIR / ".env"
 load_dotenv(dotenv_path=env_path)
 
-DB_PATH = Path(__file__).parent / "jobs.db"
-PROFILE_PATH = Path(__file__).parent / "library.json"  # candidate profile (library.json)
+DB_PATH = DATA_DIR / "jobs.db"
+PROFILE_PATH = DATA_DIR / "library.json"  # candidate profile (library.json)
 README_URL = "https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/README.md"
 
 # --- 1. Data Classes ---
 
+@dataclass
 class JobMatchMetrics:
-    def __init__(self, overall_fit_percentage: float, confidence_score: float):
-        self.overall_fit_percentage = overall_fit_percentage
-        self.confidence_score = confidence_score
+    overall_fit_percentage: float
+    confidence_score: float
 
+@dataclass
 class JobEvaluation:
-    def __init__(self, score, suitability_reason, match_metrics, core_alignments, technical_gaps, vulnerability_analysis):
-        self.score = score
-        self.suitability_reason = suitability_reason
-        self.match_metrics = match_metrics
-        self.core_alignments = core_alignments
-        self.technical_gaps = technical_gaps
-        self.vulnerability_analysis = vulnerability_analysis
+    score: int
+    suitability_reason: str
+    match_metrics: JobMatchMetrics
+    core_alignments: list
+    technical_gaps: list
+    vulnerability_analysis: str
+
+# --- 1b. Module-level constants ---
+
+EXPIRED_INDICATORS = [
+    "page not found", "job not found", "job is no longer available",
+    "no longer accepting applications", "this job is closed",
+    "the page you are looking for doesn't exist", "link you followed may be broken",
+    "couldn't find that page", "couldn’t find that page", "could not find that page",
+    "job has been filled", "position has been filled",
+    "no longer accepting", "job listing is no longer", "this job is no longer",
+    "posting has expired", "job has expired", "position is no longer available",
+    "successfully closed", "not currently accepting", "opening has been filled",
+]
 
 # --- 2. Database Helpers ---
 
+SCHEMA_SQL = """
+    CREATE TABLE IF NOT EXISTS jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        company TEXT,
+        role TEXT,
+        location TEXT,
+        apply_url TEXT UNIQUE,
+        category TEXT,
+        status TEXT,
+        score INTEGER,
+        suitability_reason TEXT,
+        job_description TEXT,
+        core_alignments TEXT,
+        technical_gaps TEXT,
+        vulnerability_analysis TEXT,
+        overall_fit_percentage REAL,
+        confidence_score REAL,
+        date_added DATETIME DEFAULT CURRENT_TIMESTAMP,
+        date_evaluated DATETIME
+    )
+"""
+
+def ensure_schema(conn):
+    conn.cursor().execute(SCHEMA_SQL)
+    conn.commit()
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS jobs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            company TEXT,
-            role TEXT,
-            location TEXT,
-            apply_url TEXT UNIQUE,
-            category TEXT,
-            status TEXT,
-            score INTEGER,
-            suitability_reason TEXT,
-            job_description TEXT,
-            core_alignments TEXT,
-            technical_gaps TEXT,
-            vulnerability_analysis TEXT,
-            overall_fit_percentage REAL,
-            confidence_score REAL,
-            date_added DATETIME DEFAULT CURRENT_TIMESTAMP,
-            date_evaluated DATETIME
-        )
-    """)
-    conn.commit()
+    ensure_schema(conn)
     return conn
 
 def import_csv_to_db():
     """Import the jobs_tracker.csv and jobs_details.json files into the SQLite database."""
-    csv_path = Path(__file__).parent / "jobs_tracker.csv"
-    details_path = Path(__file__).parent / "jobs_details.json"
+    csv_path = DATA_DIR / "jobs_tracker.csv"
+    details_path = DATA_DIR / "jobs_details.json"
     
     if not csv_path.exists():
         return
@@ -93,29 +163,9 @@ def import_csv_to_db():
             
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
+
     # Re-initialize the database schema
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS jobs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            company TEXT,
-            role TEXT,
-            location TEXT,
-            apply_url TEXT UNIQUE,
-            category TEXT,
-            status TEXT,
-            score INTEGER,
-            suitability_reason TEXT,
-            job_description TEXT,
-            core_alignments TEXT,
-            technical_gaps TEXT,
-            vulnerability_analysis TEXT,
-            overall_fit_percentage REAL,
-            confidence_score REAL,
-            date_added DATETIME DEFAULT CURRENT_TIMESTAMP,
-            date_evaluated DATETIME
-        )
-    """)
+    ensure_schema(conn)
     
     import csv
     with open(csv_path, "r", newline="", encoding="utf-8") as f:
@@ -357,16 +407,34 @@ def is_us_or_canada(location: str) -> bool:
     # Default to True if no non-US country is mentioned
     return True
 
+def _fetch_greenhouse_api(board_token: str, job_id: str) -> str | None:
+    """Fetch job content from the Greenhouse boards API. Returns formatted text or None."""
+    try:
+        api_url = f"https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs/{job_id}"
+        resp = requests.get(api_url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            title = data.get("title", "")
+            content_html = data.get("content", "")
+            location = data.get("location", {}).get("name", "")
+            soup = BeautifulSoup(content_html, 'html.parser')
+            body_text = f"{title}\n{location}\n\n{soup.get_text()}"
+            return body_text.strip()
+    except Exception as e:
+        print(f"[!] Greenhouse API fetch exception ({board_token}/{job_id}): {e}")
+    return None
+
+
 def try_fetch_from_greenhouse_api(url):
     """Attempt to parse Greenhouse board token and job ID from URL and fetch via Greenhouse API."""
     try:
         parsed = urlparse(url)
         netloc = parsed.netloc.lower()
         path = parsed.path
-        
+
         board_token = None
         job_id = None
-        
+
         DOMAIN_TO_GREENHOUSE_TOKEN = {
             "braincorp.com": "braincorporation",
             "www.braincorp.com": "braincorporation",
@@ -375,7 +443,7 @@ def try_fetch_from_greenhouse_api(url):
             "seatgeek.com": "seatgeek",
             "www.seatgeek.com": "seatgeek"
         }
-        
+
         if "greenhouse.io" in netloc:
             parts = [p for p in path.split('/') if p]
             if len(parts) >= 3 and parts[1] == 'jobs':
@@ -403,19 +471,9 @@ def try_fetch_from_greenhouse_api(url):
                             domain_parts = netloc.split('.')
                             if len(domain_parts) >= 2:
                                 board_token = domain_parts[-2]
-                            
+
         if board_token and job_id:
-            api_url = f"https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs/{job_id}"
-            resp = requests.get(api_url, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                title = data.get("title", "")
-                content_html = data.get("content", "")
-                location = data.get("location", {}).get("name", "")
-                
-                soup = BeautifulSoup(content_html, 'html.parser')
-                body_text = f"{title}\n{location}\n\n{soup.get_text()}"
-                return body_text.strip()
+            return _fetch_greenhouse_api(board_token, job_id)
     except Exception as e:
         print(f"[!] Greenhouse API fetch exception for {url}: {e}")
     return None
@@ -443,20 +501,8 @@ async def fetch_job_description(apply_url):
         except Exception as e:
             print(f"[!] Warning: iCIMS requests fetch failed for {apply_url} - {e}")
 
-    # Fall back to Playwright with system Chrome
-    import platform
-    system = platform.system()
-    chrome_candidates = []
-    if system == "Darwin":
-        chrome_candidates = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
-    elif system == "Windows":
-        chrome_candidates = [
-            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        ]
-    else:
-        chrome_candidates = ["/usr/bin/google-chrome", "/usr/bin/chromium-browser", "/usr/bin/chromium"]
-    chrome_path = next((p for p in chrome_candidates if os.path.exists(p)), "")
+    # Fall back to Playwright with system Chrome (C7: use shared _find_chrome)
+    chrome_path = _find_chrome()
 
     async with async_playwright() as p:
         launch_kwargs = dict(
@@ -471,7 +517,7 @@ async def fetch_job_description(apply_url):
             viewport={"width": 1280, "height": 800}
         )
         await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        
+
         page = await context.new_page()
         try:
             await page.set_extra_http_headers({
@@ -481,7 +527,7 @@ async def fetch_job_description(apply_url):
             })
             await page.goto(apply_url, timeout=35000, wait_until="load")
             await page.wait_for_timeout(3000) # Settle React loading spinners
-            
+
             # Self-healing Greenhouse embed iframe detection
             iframes = await page.locator("iframe").all()
             for iframe in iframes:
@@ -491,24 +537,17 @@ async def fetch_job_description(apply_url):
                     qsl = dict(parse_qsl(parsed_src.query))
                     board_token = qsl.get("for") or qsl.get("board_token")
                     job_id = qsl.get("token") or qsl.get("gh_jid") or qsl.get("job_id")
-                    
+
                     if not job_id:
                         parts = [p for p in parsed_src.path.split('/') if p]
                         if parts and parts[-1].isdigit():
                             job_id = parts[-1]
-                            
+
                     if board_token and job_id:
                         print(f"    [+] Dynamically detected Greenhouse iframe token='{board_token}', job_id='{job_id}'. Fetching API...")
-                        api_url = f"https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs/{job_id}"
-                        resp = requests.get(api_url, timeout=10)
-                        if resp.status_code == 200:
-                            data = resp.json()
-                            title = data.get("title", "")
-                            content_html = data.get("content", "")
-                            location = data.get("location", {}).get("name", "")
-                            soup = BeautifulSoup(content_html, 'html.parser')
-                            body_text = f"{title}\n{location}\n\n{soup.get_text()}"
-                            return body_text.strip()
+                        result = _fetch_greenhouse_api(board_token, job_id)
+                        if result:
+                            return result
                             
             text = await page.locator("body").inner_text()
             return text.strip()
@@ -539,12 +578,19 @@ Scoring Criteria — score 1, 2, or 3:
 Output ONLY a valid JSON object — no markdown, no commentary:
 {{
   "score": 1,
-  "suitability_reason": "Detailed reasoning referencing specific requirements.",
+  "suitability_reason": "FIT:85 | +new-grad +Python +ML | -needs-Go -cleared",
   "match_metrics": {{"overall_fit_percentage": 85, "confidence_score": 90}},
   "core_alignments": ["requirement that matches candidate experience"],
   "technical_gaps": ["critical technology missing from candidate profile"],
   "vulnerability_analysis": "Where candidate might struggle in coding/system design interview."
-}}"""
+}}
+
+IMPORTANT — suitability_reason format:
+  "FIT:<fit_pct> | +<match1> +<match2> ... | -<gap1> -<gap2> ..."
+  • FIT: the overall_fit_percentage as an integer.
+  • + tokens: key strengths / matching requirements (short kebab, max 4 words each).
+  • - tokens: key gaps / disqualifiers (short kebab, max 4 words each).
+  • Max length: 120 characters. Do NOT write prose — only this compact tag format."""
 
     import httpx
     async with httpx.AsyncClient(timeout=45) as client:
@@ -583,9 +629,15 @@ Output ONLY a valid JSON object — no markdown, no commentary:
     except Exception:
         score_val = 3
 
+    raw_reason = str(data.get("suitability_reason", ""))
+    # Enforce compact tag format: if model returned prose, truncate to 120 chars
+    if raw_reason and not raw_reason.startswith("FIT:"):
+        raw_reason = raw_reason[:120].rstrip()
+    suitability_reason = raw_reason or f"FIT:{int(mm.get('overall_fit_percentage',0))} | (no detail)"
+
     return JobEvaluation(
         score=score_val,
-        suitability_reason=str(data.get("suitability_reason", "No reason provided.")),
+        suitability_reason=suitability_reason,
         match_metrics=JobMatchMetrics(
             overall_fit_percentage=float(mm.get("overall_fit_percentage", 0)),
             confidence_score=float(mm.get("confidence_score", 0))
@@ -652,15 +704,9 @@ def cleanup_database_locations_and_errors(conn):
     cursor.execute("SELECT id, job_description, status FROM jobs WHERE job_description IS NOT NULL AND status NOT IN ('Closed', 'Closed (Removed from List)', 'Closed (Expired)')")
     active_jobs_descs = cursor.fetchall()
     expired_count = 0
-    expired_indicators = [
-        "page not found", "job not found", "job is no longer available", 
-        "no longer accepting applications", "this job is closed", 
-        "the page you are looking for doesn't exist", "link you followed may be broken",
-        "couldn't find that page", "couldn’t find that page", "could not find that page"
-    ]
     for job_id, desc, current_status in active_jobs_descs:
         desc_lower = desc.lower()
-        if any(term in desc_lower for term in expired_indicators):
+        if any(term in desc_lower for term in EXPIRED_INDICATORS):
             cursor.execute("UPDATE jobs SET status = 'Closed (Expired)', score = 3 WHERE id = ?", (job_id,))
             expired_count += 1
             
@@ -687,9 +733,7 @@ def run_ingest():
     
     print("[*] Fetching latest jobs list from Simplify repository...")
     try:
-        import urllib3
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        resp = requests.get(README_URL, timeout=15, verify=False)
+        resp = requests.get(README_URL, timeout=15)
         resp.raise_for_status()
         content = resp.text
     except Exception as e:
@@ -758,165 +802,158 @@ def run_ingest():
     print(f"    - Marked {removed_count} jobs as closed/inactive (removed from Simplify list).")
     export_db_to_csv()
 
+async def _scrape_job_description(url: str) -> str | None:
+    """Fetch/scrape the job description text for a single URL. Returns text or None."""
+    return await fetch_job_description(url)
+
+
+async def _evaluate_single_job(conn, job: tuple, profile_data: dict, api_key: str | None, dry_run: bool) -> tuple[bool, bool]:
+    """Scrape + optionally evaluate one pending job row. Returns (dry_run_ok, dry_run_fail) bools."""
+    job_id, company, role, location, apply_url = job
+    cursor = conn.cursor()
+
+    print(f"\n[*] {'Scraping' if dry_run else 'Evaluating'}: {company} - {role}...")
+    print(f"    Location: {location}")
+    print(f"    Link: {apply_url}")
+
+    job_desc = await _scrape_job_description(apply_url)
+    if not job_desc or len(job_desc) < 300:
+        is_expired = False
+        if job_desc:
+            desc_lower = job_desc.lower()
+            if any(term in desc_lower for term in EXPIRED_INDICATORS):
+                is_expired = True
+
+        if is_expired:
+            print("    [+] Expired listing detected. Marking as Closed (Expired).")
+            if not dry_run:
+                cursor.execute(
+                    "UPDATE jobs SET status = 'Closed (Expired)', score = 3, job_description = ? WHERE id = ?",
+                    (job_desc, job_id),
+                )
+                conn.commit()
+        else:
+            print("    [!] Fetch failed or too short.")
+            if dry_run:
+                return False, True  # (ok=False, fail=True)
+            else:
+                cursor.execute(
+                    "UPDATE jobs SET status = 'Fetch Failed / Manual Review' WHERE id = ?",
+                    (job_id,),
+                )
+                conn.commit()
+        return False, False
+
+    print(f"    [+] Successfully fetched description ({len(job_desc)} chars).")
+
+    if dry_run:
+        preview = job_desc[:400].replace('\n', ' ')
+        print(f"    [PREVIEW] {preview}...")
+        print(f"    [DRY-RUN] ✓ Scrape OK — DeepSeek would receive {len(job_desc)} chars of context.")
+        return True, False  # (ok=True, fail=False)
+
+    print("    Evaluating with DeepSeek...")
+    try:
+        eval_result = await evaluate_job_with_llm(api_key, profile_data, job_desc)
+
+        if not is_us_or_canada(location):
+            status_str = "Ineligible (Non-US/Canada)"
+            score_val = 3
+        else:
+            status_str = f"Eligible (Priority {eval_result.score})" if eval_result.score < 3 else "Ineligible"
+            score_val = eval_result.score
+
+        cursor.execute("""
+            UPDATE jobs
+            SET status = ?,
+                score = ?,
+                suitability_reason = ?,
+                job_description = ?,
+                core_alignments = ?,
+                technical_gaps = ?,
+                vulnerability_analysis = ?,
+                overall_fit_percentage = ?,
+                confidence_score = ?,
+                date_evaluated = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (
+            status_str,
+            score_val,
+            eval_result.suitability_reason,
+            job_desc,
+            json.dumps(eval_result.core_alignments),
+            json.dumps(eval_result.technical_gaps),
+            eval_result.vulnerability_analysis,
+            eval_result.match_metrics.overall_fit_percentage,
+            eval_result.match_metrics.confidence_score,
+            job_id,
+        ))
+        conn.commit()
+        print(f"    [+] Evaluated: Score = {score_val} ({status_str})")
+        print(f"    [+] Reason: {eval_result.suitability_reason}")
+    except Exception as e:
+        print(f"    [!] Error during evaluation: {e}")
+        cursor.execute("UPDATE jobs SET status = 'Evaluation Error' WHERE id = ?", (job_id,))
+        conn.commit()
+
+    return False, False
+
+
 async def run_evaluate(limit=10, dry_run=False):
     """Fetch and evaluate pending jobs in the database.
     If dry_run=True, scrapes job descriptions but skips LLM evaluation (validates scraping pipeline)."""
     if dry_run:
         print("[DRY-RUN] Scraping job descriptions only — DeepSeek LLM calls SKIPPED.")
+        api_key = None
     else:
         api_key = os.getenv("DEEPSEEK_API_KEY")
         if not api_key:
             print("[ERROR] No DEEPSEEK_API_KEY found. Check .env file.")
             return
-        
+
     if not PROFILE_PATH.exists():
         print(f"[ERROR] Candidate profile not found at {PROFILE_PATH}.")
         return
-        
+
     with open(PROFILE_PATH, "r", encoding="utf-8") as f:
         profile_data = json.load(f)
 
-    if not dry_run:
-        api_key = os.getenv("DEEPSEEK_API_KEY")
-        if not api_key:
-            print("[ERROR] No DEEPSEEK_API_KEY found. Check .env file.")
-            return
-    else:
-        api_key = None
-    
     conn = sqlite3.connect(DB_PATH)
-    
+
     # Run cleanup first to filter out non-US/Canada and reset errored/failed
     cleanup_database_locations_and_errors(conn)
-    
+
     cursor = conn.cursor()
-    
+
     if limit == -1:
-        cursor.execute("""
-            SELECT id, company, role, location, apply_url FROM jobs 
-            WHERE status = 'Pending Evaluation'
-        """)
+        cursor.execute("SELECT id, company, role, location, apply_url FROM jobs WHERE status = 'Pending Evaluation'")
     else:
-        cursor.execute("""
-            SELECT id, company, role, location, apply_url FROM jobs 
-            WHERE status = 'Pending Evaluation' 
-            LIMIT ?
-        """, (limit,))
+        cursor.execute(
+            "SELECT id, company, role, location, apply_url FROM jobs WHERE status = 'Pending Evaluation' LIMIT ?",
+            (limit,),
+        )
     pending_jobs = cursor.fetchall()
-    
+
     if not pending_jobs:
         print("[*] No pending jobs to evaluate.")
         conn.close()
         return
-        
+
     print(f"[*] Starting {'dry-run scrape' if dry_run else 'evaluation'} for {len(pending_jobs)} pending jobs...")
-    
+
     dry_run_ok = 0
     dry_run_fail = 0
-    for job_id, company, role, location, apply_url in pending_jobs:
-        print(f"\n[*] {'Scraping' if dry_run else 'Evaluating'}: {company} - {role}...")
-        print(f"    Location: {location}")
-        print(f"    Link: {apply_url}")
-        
-        job_desc = await fetch_job_description(apply_url)
-        if not job_desc or len(job_desc) < 300:
-            is_expired = False
-            if job_desc:
-                desc_lower = job_desc.lower()
-                expired_indicators = [
-                    "page not found", "job not found", "job is no longer available", 
-                    "no longer accepting applications", "this job is closed", 
-                    "the page you are looking for doesn't exist", "link you followed may be broken",
-                    "couldn't find that page", "couldn't find that page", "could not find that page"
-                ]
-                if any(term in desc_lower for term in expired_indicators):
-                    is_expired = True
-                    
-            if is_expired:
-                print("    [+] Expired listing detected. Marking as Closed (Expired).")
-                if not dry_run:
-                    cursor.execute("""
-                        UPDATE jobs 
-                        SET status = 'Closed (Expired)', score = 3, job_description = ?
-                        WHERE id = ?
-                    """, (job_desc, job_id))
-                    conn.commit()
-            else:
-                print("    [!] Fetch failed or too short.")
-                if dry_run:
-                    dry_run_fail += 1
-                else:
-                    cursor.execute("""
-                        UPDATE jobs 
-                        SET status = 'Fetch Failed / Manual Review' 
-                        WHERE id = ?
-                    """, (job_id,))
-                    conn.commit()
-            continue
-            
-        print(f"    [+] Successfully fetched description ({len(job_desc)} chars).")
-        
-        if dry_run:
-            # Just preview — no LLM call
+    for job in pending_jobs:
+        ok, fail = await _evaluate_single_job(conn, job, profile_data, api_key, dry_run)
+        if ok:
             dry_run_ok += 1
-            preview = job_desc[:400].replace('\n', ' ')
-            print(f"    [PREVIEW] {preview}...")
-            print(f"    [DRY-RUN] ✓ Scrape OK — DeepSeek would receive {len(job_desc)} chars of context.")
-            continue
+        if fail:
+            dry_run_fail += 1
 
-        print(f"    Evaluating with DeepSeek...")
-        try:
-            eval_result = await evaluate_job_with_llm(api_key, profile_data, job_desc)
-            
-            # If the job is outside the US or Canada, force status to Ineligible (Non-US/Canada) and score to 3
-            if not is_us_or_canada(location):
-                status_str = "Ineligible (Non-US/Canada)"
-                score_val = 3
-            else:
-                status_str = f"Eligible (Priority {eval_result.score})" if eval_result.score < 3 else "Ineligible"
-                score_val = eval_result.score
-            
-            cursor.execute("""
-                UPDATE jobs 
-                SET status = ?, 
-                    score = ?, 
-                    suitability_reason = ?, 
-                    job_description = ?, 
-                    core_alignments = ?, 
-                    technical_gaps = ?, 
-                    vulnerability_analysis = ?, 
-                    overall_fit_percentage = ?, 
-                    confidence_score = ?, 
-                    date_evaluated = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """, (
-                status_str,
-                score_val,
-                eval_result.suitability_reason,
-                job_desc,
-                json.dumps(eval_result.core_alignments),
-                json.dumps(eval_result.technical_gaps),
-                eval_result.vulnerability_analysis,
-                eval_result.match_metrics.overall_fit_percentage,
-                eval_result.match_metrics.confidence_score,
-                job_id
-            ))
-            conn.commit()
-            print(f"    [+] Evaluated: Score = {score_val} ({status_str})")
-            print(f"    [+] Reason: {eval_result.suitability_reason}")
-        except Exception as e:
-            print(f"    [!] Error during evaluation: {e}")
-            cursor.execute("""
-                UPDATE jobs 
-                SET status = 'Evaluation Error' 
-                WHERE id = ?
-            """, (job_id,))
-            conn.commit()
-            
     conn.close()
     if dry_run:
         print(f"\n[DRY-RUN] Done. Scraped OK: {dry_run_ok}, Failed: {dry_run_fail}")
-        print(f"[DRY-RUN] Pipeline validated — run without --dry-run on Windows with DEEPSEEK_API_KEY to evaluate.")
+        print("[DRY-RUN] Pipeline validated — run without --dry-run on Windows with DEEPSEEK_API_KEY to evaluate.")
     else:
         print("\n[+] Evaluation loop complete.")
         export_db_to_csv()
@@ -994,9 +1031,12 @@ def detect_applicator(url: str) -> str | None:
     """Return the applicator script path for a given job URL, or None if unsupported."""
     base = Path(__file__).parent
     if "myworkdayjobs.com" in url or "workday.com" in url:
-        return str(base / "app_workday_v3.py")
+        return str(base / "app_workday.py")
+    if "greenhouse.io" in url or "gh_jid=" in url:
+        return str(base / "app_greenhouse.py")
     # Add more handlers here as they are built:
-    # if "greenhouse.io" in url: return str(base / "app_greenhouse.py")
+    # if "lever.co" in url: return str(base / "app_lever.py")
+    # if "ashbyhq.com" in url: return str(base / "app_ashby.py")
     return None
 
 def run_apply_loop():
@@ -1022,8 +1062,7 @@ def run_apply_loop():
     print("[*] Starting loop from highest score/priority to lowest...")
     
     import subprocess
-    import sys
-    
+
     for idx, (job_id, company, role, location, score, fit, url) in enumerate(jobs):
         print("\n" + "="*80)
         print(f"[{idx+1}/{len(jobs)}] Job ID {job_id}: {company} - {role}")
@@ -1061,28 +1100,28 @@ def run_apply_loop():
 
 def export_db_to_csv():
     """Export the SQLite database contents to a clean CSV file and detailed columns to a JSON file."""
-    csv_path = Path(__file__).parent / "jobs_tracker.csv"
-    details_path = Path(__file__).parent / "jobs_details.json"
-    
+    csv_path = DATA_DIR / "jobs_tracker.csv"
+    details_path = DATA_DIR / "jobs_details.json"
+
     try:
         import csv
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
-        # Fetch summary columns for CSV
+        # Fetch summary columns for CSV — Apply URL first for quick clicking
         cursor.execute("""
-            SELECT id, company, role, location, category, status, score, 
-                   overall_fit_percentage, confidence_score, date_added, date_evaluated, 
-                   suitability_reason, apply_url
+            SELECT apply_url, id, company, role, location, category, status, score,
+                   overall_fit_percentage, confidence_score, date_added, date_evaluated,
+                   suitability_reason
             FROM jobs
             ORDER BY score ASC, overall_fit_percentage DESC, date_added DESC
         """)
         csv_rows = cursor.fetchall()
-        
+
         csv_headers = [
-            "ID", "Company", "Role", "Location", "Category", "Status", "Score", 
-            "Overall Fit %", "Confidence Score", "Date Added", "Date Evaluated", 
-            "Suitability Reason", "Apply URL"
+            "Apply URL", "ID", "Company", "Role", "Location", "Category", "Status", "Score",
+            "Overall Fit %", "Confidence Score", "Date Added", "Date Evaluated",
+            "Suitability Reason",
         ]
         
         with open(csv_path, "w", newline="", encoding="utf-8") as f:

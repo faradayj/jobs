@@ -1,5 +1,5 @@
 """
-app_workday_v3.py  —  Workday Application Bot
+app_workday.py  —  Workday Application Bot
 ==============================================
 Fills and submits Workday job applications (*.myworkdayjobs.com).
 
@@ -16,20 +16,20 @@ Architecture:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   # Headless (default, no browser window):
-  python3 agent_test/app_workday_v3.py "JOB_URL"
+  python3 src/app_workday.py "JOB_URL"
 
   # Headed / displayed mode (shows Chrome window for manual review/edits):
-  python3 agent_test/app_workday_v3.py "JOB_URL" --show
+  python3 src/app_workday.py "JOB_URL" --show
 
   # Log to file — Mac/Linux:
-  python3 -u agent_test/app_workday_v3.py "JOB_URL" > run.txt 2>&1 &
+  python3 -u src/app_workday.py "JOB_URL" > run.txt 2>&1 &
   tail -f run.txt
 
   # Log to file — Windows (PowerShell):
-  Start-Process python -ArgumentList "-u agent_test/app_workday_v3.py `"JOB_URL`"" -RedirectStandardOutput run.txt -NoNewWindow
+  Start-Process python -ArgumentList "-u src/app_workday.py `"JOB_URL`"" -RedirectStandardOutput run.txt -NoNewWindow
   Get-Content run.txt -Wait
 
-  # Screenshots saved to agent_test/artifacts/ on errors or stuck pages.
+  # Screenshots saved to artifacts/ on errors or stuck pages.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  FLAGS
@@ -44,14 +44,11 @@ Architecture:
  CONFIG
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  agent_test/.env            DEEPSEEK_API_KEY=sk-...   (optional)
-  agent_test/library.json    Candidate profile, resume path, preferences
+  data/.env            DEEPSEEK_API_KEY=sk-...   (optional)
+  data/library.json    Candidate profile, resume path, preferences
 """
 
-import asyncio, json, os, re, sys
-from datetime import datetime
-from pathlib import Path
-from dotenv import load_dotenv
+import asyncio, datetime, json, re, sys
 from playwright.async_api import async_playwright, Page
 
 # Windows: prevent UnicodeEncodeError on emoji/special chars in log output
@@ -65,115 +62,30 @@ else:
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
 
-SCRIPT_DIR  = Path(__file__).parent
-load_dotenv(SCRIPT_DIR / ".env")
+from app_common import (
+    LIBRARY, PI, WE, EDU, LANG, RESUME_PATH,
+    CHROME_PATH, EMAIL, PASSWORD, DEEPSEEK_KEY,
+    PHONE_DIGITS, PROFILE_SUMMARY, SYSTEM_PROMPT,
+    deepseek_fill_page, label_match, pick_decline, fuzzy_pick,
+    rule_based_answer, rule_based_fill_fields,
+    launch_browser, write_json_report, scrape_salary,
+    ARTIFACTS_DIR,
+)
 
-# ── Chrome path: auto-detect by platform ─────────────────────────────────────
-def _find_chrome() -> str:
-    import platform
-    system = platform.system()
-    candidates = []
-    if system == "Darwin":
-        candidates = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
-    elif system == "Windows":
-        candidates = [
-            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
-        ]
-    else:  # Linux
-        candidates = ["/usr/bin/google-chrome", "/usr/bin/chromium-browser",
-                      "/usr/bin/chromium", "/snap/bin/chromium"]
-    for p in candidates:
-        if os.path.exists(p):
-            return p
-    # Last resort: let Playwright use its own bundled Chromium
-    return ""
-
-LIBRARY     = json.loads((SCRIPT_DIR / "library.json").read_text())
-PI          = LIBRARY["personal_info"]
-WE          = LIBRARY.get("work_experience", [])
-EDU         = LIBRARY.get("education_history", [])
-LANG        = LIBRARY.get("languages", [])
-
-# Resume path: from library.json (relative to repo root) or auto-discover
-# Always resolve to absolute path — set_input_files requires absolute paths
-_resume_rel = LIBRARY.get("resume_path", "")
-if _resume_rel:
-    _rp = Path(_resume_rel) if Path(_resume_rel).is_absolute() else SCRIPT_DIR.parent / _resume_rel
-    RESUME_PATH = str(_rp.resolve())
-else:
-    _pdfs = list(SCRIPT_DIR.glob("*.pdf"))
-    RESUME_PATH = str(_pdfs[0].resolve()) if _pdfs else ""
-
-# User agent: match the actual platform so Workday renders the platform-correct version
-import platform as _plat
-_ua_os = {
-    "Darwin":  "Macintosh; Intel Mac OS X 10_15_7",
-    "Windows": "Windows NT 10.0; Win64; x64",
-    "Linux":   "X11; Linux x86_64",
-}.get(_plat.system(), "Windows NT 10.0; Win64; x64")
-USER_AGENT = (f"Mozilla/5.0 ({_ua_os}) AppleWebKit/537.36 "
-              f"(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-
-CHROME_PATH = _find_chrome()
-EMAIL       = PI["email"]
-PASSWORD    = PI["password"]
-ARTIFACTS   = SCRIPT_DIR / "artifacts"
+ARTIFACTS = ARTIFACTS_DIR
 ARTIFACTS.mkdir(exist_ok=True)
 
-DEEPSEEK_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+# Async shim so existing await call sites work unchanged
+async def rule_based_fill_page(fields: list[dict], context_hint: str = "") -> list[dict]:
+    return rule_based_fill_fields(fields, context_hint)
 
 DEFAULT_JOB_URL = (
     "https://truist.wd1.myworkdayjobs.com/en-US/Careers/job/Raleigh-NC/"
     "Java-Software-Engineer-I---Full-Stack----Financial-Crimes_R0115229"
 )
 
-# ── Profile summary for DeepSeek ─────────────────────────────────────────────
-PROFILE_SUMMARY = json.dumps({
-    "personal_info": {k: v for k, v in PI.items() if k != "password"},
-    "work_experience": WE,
-    "education_history": EDU,
-    "skills": LIBRARY.get("skills", []),
-    "languages": LIBRARY.get("languages", []),
-    "role_preferences":   LIBRARY.get("role_preferences", {}),
-    "compensation_rules": LIBRARY.get("compensation_rules", {}),
-    "job_listing_salary": None,   # filled at runtime after scraping the listing page
-    "regulatory_self_identification": LIBRARY.get("regulatory_self_identification", {}),
-    "job_board_mappings": LIBRARY.get("job_board_mappings", {}),
-}, indent=2)
 
-# ── DeepSeek batch resolver ───────────────────────────────────────────────────
-
-SYSTEM_PROMPT = """You are an AI filling out a job application form for a candidate.
-Given a list of form fields (with labels, types, and available options), return the best answer for EVERY fillable field.
-
-Rules:
-- Use candidate profile to answer accurately and honestly.
-- "First Name" / "Last Name" / "Address" / "City" / "State" / "Zip" / "Phone" → use personal_info.
-- "How did you hear" → "LinkedIn" or closest available option.
-- Visa/sponsorship → use job_board_mappings.requires_visa_sponsorship.
-- Salary/compensation → use job_listing_salary if set (pick the range option closest to it); otherwise use compensation_rules.baseline_target_pay.
-- EEO fields (gender, sex, race, ethnicity, hispanic/latino, veteran) → check regulatory_self_identification.primary_demographic_action:
-    * If "Decline To Self Identify" → FIRST look for an explicit "prefer not to answer"/"decline"/"I do not want to answer"/"I do not wish to disclose" option and pick it.
-      If no such option exists AND the field label says "leave blank" → pick "Select One" (leave blank).
-      If no such option exists AND the field appears required (no blank/decline available) → use fallback_gender / fallback_race / fallback_hispanic_ethnicity from the profile.
-    * If a specific identity is given → use fallback_gender / fallback_race / fallback_hispanic_ethnicity from the profile.
-  The label will often say "Leave blank if you do not wish to declare" — this means the field is optional; picking "Select One" is valid.
-- Disability → use regulatory_self_identification.disability_answer.
-- Veteran status → use regulatory_self_identification.veteran_status_selection.
-- Age 18+ / authorized to work → "Yes".
-- Non-compete / prior employment at this company → "No" unless profile says otherwise.
-- Open-ended text → concise honest answer from profile.
-- Skills fields → use the skills array; pick the closest matching option from available choices.
-- Language fields → use the languages array for language name and proficiency level.
-- If filling a specific Work Experience / Education / Language entry, an "Entry Context" block
-  will be provided — use ONLY that entry's data for fields in that dialog, not other entries.
-- For selectinput/button-dropdown fields, your value must EXACTLY match one of the provided options.
-- Skip nav buttons, already-filled fields, fields with no relevant data.
-
-Respond ONLY with valid JSON: {"answers": [{"index": <int>, "value": "<string>"}]}
-Only include fields you have an answer for."""
+# ── Workday-specific: skills pill picker via DeepSeek ────────────────────────
 
 async def deepseek_pick_skill(search_term: str, options: list[str], already_selected: list[str]) -> str | None:
     """Ask DeepSeek which dropdown option best matches the desired skill.
@@ -214,417 +126,11 @@ async def deepseek_pick_skill(search_term: str, options: list[str], already_sele
         return None
 
 
-async def deepseek_fill_page(fields: list[dict],
-                             entry: dict = None,
-                             section_type: str = "") -> list[dict]:
-    """Send page/dialog fields to DeepSeek. Returns [{index, value}] or [] on error/no key.
-
-    entry + section_type are passed for add-dialog calls so the LLM knows exactly which
-    Work Experience / Education / Language entry it is currently filling.
-    """
-    if not DEEPSEEK_KEY:
-        return []
-    field_lines = []
-    for f in fields:
-        line = f"[{f['index']}] type={f['type']} label={f['label']!r}"
-        if f.get("date_seq"): line += f" date_seq={f['date_seq']}"   # start vs end date
-        if f.get("options"): line += f" options={f['options']}"
-        if f.get("value"):   line += f" current={f['value']!r}"
-        if f.get("section"): line += f" section={f['section']!r}"
-        field_lines.append(line)
-
-    # Build entry context block so LLM knows which specific entry it's filling
-    entry_context = ""
-    if entry and section_type:
-        entry_context = (f"\nEntry Context (you are filling ONE {section_type} entry — "
-                         f"use ONLY this data for these fields):\n"
-                         f"{json.dumps(entry, indent=2)}\n")
-
-    prompt = (f"Candidate Profile:\n{PROFILE_SUMMARY}\n"
-              f"{entry_context}"
-              f"\nForm Fields (page: {fields[0].get('page_heading','') if fields else ''}):\n"
-              + "\n".join(field_lines))
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=30) as c:
-            r = await c.post("https://api.deepseek.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {DEEPSEEK_KEY}"},
-                json={"model": "deepseek-chat", "temperature": 0.1, "max_tokens": 1000,
-                      "messages": [{"role": "system", "content": SYSTEM_PROMPT},
-                                   {"role": "user",   "content": prompt}]})
-        raw = r.json()["choices"][0]["message"]["content"].strip()
-        m = re.search(r'\{.*\}', raw, re.DOTALL)
-        if m:
-            return json.loads(m.group()).get("answers", [])
-    except Exception as e:
-        print(f"  [LLM] DeepSeek error: {e}")
-    return []
-
-
-# ── Label-matching fallback fill engine ───────────────────────────────────────
-# Used when DeepSeek is unavailable. Matches field labels → profile values.
-
-COMP = LIBRARY.get("compensation_rules", {})
-REG  = LIBRARY.get("regulatory_self_identification", {})
-JBM  = LIBRARY.get("job_board_mappings", {})
-PHONE_DIGITS = "".join(c for c in PI.get("phone","") if c.isdigit())
-# Normalize sponsorship flag: "No"/"false"/False/0 → False; anything else → True
-_sponsor_raw = JBM.get("requires_visa_sponsorship", "No")
-NEEDS_SPONSOR = str(_sponsor_raw).lower() not in ("no", "false", "0", "")
-# Disability answer from library (default "yes" per CC-305 self-ID guidelines)
-DISABILITY_ANSWER = str(REG.get("disability_answer", "yes")).lower()
-
-def label_match(label: str, *keywords) -> bool:
-    l = label.lower()
-    return any(k in l for k in keywords)
-
-DECLINE_KEYWORDS = ["not wish","don't wish","prefer not","decline","choose not",
-                    "not wish to self","no wish","i do not wish"]
-
-def pick_decline(opts: list[str]) -> str | None:
-    for o in opts:
-        if any(k in o.lower() for k in DECLINE_KEYWORDS):
-            return o
-    return None
-
-def fuzzy_pick(opts: list[str], value: str) -> str | None:
-    """Fuzzy match value against options list: exact → starts → contains."""
-    vl = value.lower().strip()
-    for strategy in [
-        lambda o: o.lower() == vl,
-        lambda o: o.lower().startswith(vl) or vl.startswith(o.lower()),
-        lambda o: vl in o.lower() or o.lower() in vl,
-    ]:
-        m = next((o for o in opts if strategy(o)), None)
-        if m: return m
-    return None
-
-def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
-    """
-    Given a scanned field, return the best value from library.json
-    purely by label inspection. Returns None if no match.
-    """
-    label   = field.get("label", "")
-    opts    = field.get("options", [])
-    section = (field.get("section") or field.get("page_heading") or context_hint).lower()
-    tag     = field.get("tag", "")
-    ftype   = field.get("type", "")
-    current = field.get("value", "")
-
-    # Skip if already filled meaningfully (but 'false' = unchecked checkbox, must not skip)
-    # Also treat values containing "select one" as unset placeholders (Workday button pattern:
-    # aria-label = "<FieldLabel> Select One Required" → value = "<FieldLabel> Select One")
-    if current and current.lower() not in ("select one", "", "false", "unchecked") \
-            and "select one" not in current.lower():
-        return None
-
-    # ── Radio buttons — check BEFORE generic input handling ──────────────────
-    if field.get("role") == "radio" or ftype == "radio":
-        opts = field.get("options", [])
-        if not opts:
-            # No scanned options — infer Yes/No from name/label
-            opts = ["Yes", "No"]
-        if label_match(label, "previously worked", "prior employ", "work for us before",
-                       "worked here", "worked for", "former employee", "previous worker",
-                       "robert half", "protiviti"):
-            return fuzzy_pick(opts, "No") or opts[-1]
-        if label_match(label, "sponsor", "visa", "work authoriz"):
-            want = "No" if not NEEDS_SPONSOR else "Yes"
-            return fuzzy_pick(opts, want) or opts[0]
-        if label_match(label, "18", "legal age", "authorized", "eligible"):
-            return fuzzy_pick(opts, "Yes") or opts[0]
-        if label_match(label, "non-compete", "non compete", "agreement", "restrictive"):
-            return fuzzy_pick(opts, "No") or opts[0]
-        if label_match(label, "relocat"):
-            return fuzzy_pick(opts, "Yes") or opts[0]
-        if label_match(label, "certify", "verify", "accurate", "acknowledge", "confirm",
-                       "agree", "consent", "terms", "true and correct"):
-            return fuzzy_pick(opts, "Yes") or fuzzy_pick(opts, "I agree") or opts[0]
-        # Default generic Yes/No → No (safer)
-        return fuzzy_pick(opts, "No") or opts[0]
-
-    # ── Checkbox — check BEFORE generic text/input block ────────────────────
-    if ftype == "checkbox" or field.get("role") == "checkbox":
-        if label_match(label, "consent", "agree", "terms", "condition", "certify",
-                       "verify", "accurate", "correct", "true and correct", "acknowledge"):
-            return "true"
-        if label_match(label, "preferred name"):
-            return "false"
-        # Disability status radio-group (Self Identify page) — driven by library.json disability_answer
-        if label_match(label, "disability"):
-            ll = label.lower()
-            if DISABILITY_ANSWER == "yes":
-                # "Yes, I have a disability" — must contain "yes" (not just "have a disability"
-                # which is also a substring of "No, I do NOT have a disability")
-                if "yes" in ll and "disability" in ll:
-                    return "true"
-                return "false"
-            else:
-                # Select "No, I do not have a disability" if disability_answer="no"
-                # or the "prefer not to answer" variant if disability_answer="prefer_not"
-                prefer_not = DISABILITY_ANSWER in ("prefer_not", "no_answer", "decline")
-                if prefer_not:
-                    if any(k in ll for k in ("don't wish", "don't want to answer", "prefer not", "decline to", "do not want to answer", "i do not want to answer")):
-                        return "true"
-                # Default "no": select explicit "No" option (label starts with "No")
-                if ll.startswith("no") and "disability" in ll:
-                    return "true"
-                return "false"
-        return None
-
-    # ── Text / textarea / selectinput fields ─────────────────────────────────
-    if tag in ("input", "textarea") or ftype in ("text","email","tel","number"):
-
-        # selectinput (search-dropdown) — treat like a dropdown value
-        if field.get("isSelectInput"):
-            if label_match(label, "how did you hear", "source", "referral", "learn about"):
-                # Multi-term fallback: LinkedIn → Internet/Online → Job Board → Other
-                hear_terms = LIBRARY.get("job_board_mappings", {}).get(
-                    "hear_about_us_fallback_order",
-                    ["LinkedIn", "Internet/Online Job Posting", "Job Board", "Other"]
-                )
-                return "\n".join(hear_terms)
-            if label_match(label, "country") and not label_match(label, "phone"):
-                return "United States of America"
-            if label_match(label, "state", "province"):
-                if "united" not in label.lower() and len(label) < 50:
-                    return PI["state"]
-            return None
-
-        if label_match(label, "first name", "given name"):
-            return PI["first_name"]
-        if label_match(label, "last name", "surname", "family name"):
-            return PI["last_name"]
-        if label_match(label, "middle name", "middle initial"):
-            return ""  # skip
-        if label_match(label, "email"):
-            return PI["email"]
-        if label_match(label, "phone number", "telephone", "cell number", "mobile number"):
-            if label_match(label, "extension", "ext"):
-                return ""
-            return PHONE_DIGITS
-        if label_match(label, "address line 1", "street address", "address 1"):
-            return PI["address"]
-        if label_match(label, "address line 2", "apt", "suite", "unit"):
-            return ""
-        if label_match(label, "city", "town"):
-            return PI["city"]
-        if label_match(label, "zip", "postal"):
-            return PI["zip_code"]
-        if label_match(label, "linkedin"):
-            return PI.get("linkedin", "")
-        if label_match(label, "github", "portfolio", "website", "url"):
-            return PI.get("github", "")
-        if label_match(label, "salary", "compensation", "pay", "wage", "expected"):
-            return str(COMP.get("baseline_target_pay", COMP.get("expected_base_salary", "120000")))
-
-        # Availability / eligibility date fields (Month/Day/Year in Application Questions)
-        # Exclude Self Identify page — those month/day/year fields are signature dates
-        # already filled by handle_self_identify; returning None skips re-filling them.
-        if label_match(label, "month", "day", "year") and (
-            "application" in section or not any(k in section for k in ("work","experience","education","school","self identify","signature"))
-        ):
-            import datetime
-            avail = datetime.date.today() + datetime.timedelta(weeks=2)
-            if label_match(label, "month"):
-                return str(avail.month).zfill(2)
-            if label_match(label, "day"):
-                return str(avail.day).zfill(2)
-            if label_match(label, "year"):
-                return str(avail.year)
-
-        if label_match(label, "name") and "employee" not in label.lower():
-            # Generic name field — use full name
-            return f"{PI['first_name']} {PI['last_name']}"
-
-        # Work experience dialog fields
-        if "work" in section or "experience" in section or "employment" in section:
-            if label_match(label, "company", "employer", "organization"):
-                return WE[0]["company"] if WE else ""
-            if label_match(label, "title", "position", "role"):
-                return WE[0]["role"] if WE else ""
-            if label_match(label, "city", "location"):
-                return WE[0].get("city","") if WE else ""
-            if label_match(label, "description", "responsibilities", "summary"):
-                return (WE[0].get("description","")[:500]) if WE else ""
-            if label_match(label, "start year"):
-                return WE[0].get("start_year","") if WE else ""
-            if label_match(label, "end year"):
-                return WE[0].get("end_year","") if WE else ""
-
-        # Education dialog fields
-        if "education" in section or "school" in section or "degree" in section:
-            if label_match(label, "school", "institution", "university", "college"):
-                return EDU[0]["institution_variants"][0] if EDU else ""
-            if label_match(label, "major", "field of study", "discipline"):
-                return EDU[0]["major_variants"][0] if EDU else ""
-            if label_match(label, "gpa", "grade"):
-                return str(EDU[0].get("gpa","")) if EDU else ""
-            if label_match(label, "start year"):
-                return EDU[0].get("start_year","") if EDU else ""
-            if label_match(label, "end year","graduation year"):
-                return EDU[0].get("end_year","") if EDU else ""
-
-        return None
-
-    # ── Button dropdowns / select ─────────────────────────────────────────────
-    if tag in ("button", "select") or ftype == "select-one":
-        if not opts:
-            return None
-
-        # EEO / demographic fields → try decline option; if none, leave blank
-        if label_match(label, "gender", "sex", "race", "ethnicity", "hispanic",
-                       "latino", "veteran", "disability"):
-            decline = pick_decline(opts)
-            if decline:
-                return decline
-            # For veteran status, prefer "not a protected veteran" option
-            if label_match(label, "veteran"):
-                for kw in ["not a protected veteran", "not a veteran", "i am not"]:
-                    m = next((o for o in opts if kw in o.lower()), None)
-                    if m: return m
-            return None  # leave blank — no decline option available
-
-        if label_match(label, "how did you hear", "source", "referral", "learn about"):
-            hear_order = LIBRARY.get("job_board_mappings", {}).get(
-                "hear_about_us_fallback_order",
-                ["LinkedIn", "Internet/Online Job Posting", "Job Board", "Other"]
-            )
-            for term in hear_order:
-                pick = fuzzy_pick(opts, term)
-                if pick: return pick
-            return opts[0]
-
-        if label_match(label, "country") and not label_match(label, "phone"):
-            return fuzzy_pick(opts, "United States") or fuzzy_pick(opts, "USA") or opts[0]
-
-        if label_match(label, "state", "province", "region") and not label_match(label, "country") \
-                and "united" not in label.lower() and len(label) < 50:
-            return fuzzy_pick(opts, PI["state"]) or opts[0]
-
-        if label_match(label, "phone", "device type", "phone type"):
-            return fuzzy_pick(opts, "Mobile") or opts[0]
-
-        if label_match(label, "suffix", "salutation", "prefix"):
-            return ""  # skip
-
-        # Sponsorship / visa
-        if label_match(label, "sponsor", "visa", "work authorization"):
-            want = "No" if not NEEDS_SPONSOR else "Yes"
-            return fuzzy_pick(opts, want) or opts[0]
-
-        # Yes/No compliance questions
-        if label_match(label, "legally authorized", "authorized to work", "18", "legal age", "eligible to work"):
-            return fuzzy_pick(opts, "Yes") or opts[0]
-
-        if label_match(label, "non-disclosure", "non-compete", "non compete", "agreement",
-                       "previously worked", "prior employ", "work for us before",
-                       "worked here", "worked for", "restrict"):
-            return fuzzy_pick(opts, "No") or opts[0]
-
-        # Relatives / employees at this company
-        if label_match(label, "relative", "family member", "familial"):
-            return fuzzy_pick(opts, "No") or opts[0]
-
-        # Termination / disciplinary history
-        if label_match(label, "terminat", "asked to resign", "discharged", "dismissed"):
-            return fuzzy_pick(opts, "No") or opts[0]
-
-        # Consent / background check / drug test / acknowledgement
-        if label_match(label, "background check", "drug test", "drug screen", "acknowledgment",
-                       "acknowledge", "consent to", "i understand and consent",
-                       "i understand", "agree to"):
-            # Pick the "I understand / consent" option, not "I do not consent"
-            for candidate in opts:
-                if re.search(r'\b(understand|consent|agree)\b', candidate, re.IGNORECASE) \
-                        and not re.search(r'\b(do not|don.t|not consent|not agree)\b', candidate, re.IGNORECASE):
-                    return candidate
-            return fuzzy_pick(opts, "Yes") or opts[0]
-
-        # Location-specific compliance (Maryland/Massachusetts type questions)
-        if label_match(label, "located in", "applying for employment within", "maryland", "massachusetts",
-                       "california", "colorado", "new york"):
-            return fuzzy_pick(opts, "No") or opts[0]
-
-        # Eligibility / start date
-        if label_match(label, "eligibil", "start date", "available", "when can you start"):
-            return fuzzy_pick(opts, "Immediately") or fuzzy_pick(opts, "2 weeks") or opts[0]
-
-        # Desired compensation — match salary range option containing the target value
-        if label_match(label, "compensation", "salary", "pay", "desired"):
-            comp = COMP.get("baseline_target_pay", COMP.get("expected_base_salary", 0))
-            try:
-                comp_n = int(str(comp).replace(",","").replace("$","").strip())
-            except (ValueError, TypeError):
-                comp_n = 0
-            if comp_n and opts:
-                # Find the range option whose upper bound >= comp and lower bound <= comp
-                def range_score(opt):
-                    nums = [int(n.replace(",","")) for n in re.findall(r'[\d,]+', opt)]
-                    if len(nums) >= 2:
-                        lo, hi = nums[0], nums[1]
-                        if lo <= comp_n <= hi: return 0      # exact range match
-                        if comp_n > hi: return comp_n - hi   # above range
-                        return lo - comp_n                   # below range
-                    return 9999
-                best = min(opts, key=range_score)
-                return best
-            return fuzzy_pick(opts, "$75,000") or fuzzy_pick(opts, "$50,000") or opts[0]
-
-        if label_match(label, "relocat"):
-            return fuzzy_pick(opts, "Yes") or opts[0]
-
-        # Language
-        if label_match(label, "language"):
-            return fuzzy_pick(opts, "English") or opts[0]
-
-        # Degree type — try abbreviation first (MS/BS), then full name
-        if label_match(label, "degree", "education level", "highest"):
-            if EDU:
-                edu = EDU[0]
-                # Try abbreviation (MS, BS) first for better dropdown matching
-                abbrev = edu.get("degree_abbreviation", "")
-                if abbrev:
-                    hit = fuzzy_pick(opts, abbrev)
-                    if hit: return hit
-                # Try search variants
-                for variant in edu.get("degree_search_variants", []):
-                    hit = fuzzy_pick(opts, variant)
-                    if hit: return hit
-                return fuzzy_pick(opts, edu.get("degree_type","")) or opts[0]
-
-        # Start/end month for work/education
-        if label_match(label, "start month"):
-            data = WE[0] if ("work" in section or "experience" in section) else (EDU[0] if EDU else None)
-            if data: return fuzzy_pick(opts, data.get("start_month","")) or opts[0]
-
-        if label_match(label, "end month"):
-            data = WE[0] if ("work" in section or "experience" in section) else (EDU[0] if EDU else None)
-            if data: return fuzzy_pick(opts, data.get("end_month","")) or opts[0]
-
-        # Currently working here checkbox-style dropdown
-        if label_match(label, "current", "present", "still work", "still attend"):
-            data = WE[0] if ("work" in section or "experience" in section) else (EDU[0] if EDU else None)
-            if data:
-                is_current = data.get("current_status","").lower() in ("currently work here","still attending")
-                return fuzzy_pick(opts, "Yes" if is_current else "No") or opts[0]
-
-        return None
-
-    # ── (checkbox handled above before text block) ────────────────────────────
-
-    return None
-
-
-async def rule_based_fill_page(fields: list[dict], context_hint: str = "") -> list[dict]:
-    """Apply rule-based matching to all fields. Returns [{index, value}]."""
-    answers = []
-    for f in fields:
-        val = rule_based_answer(f, context_hint)
-        if val is not None and val != "":
-            answers.append({"index": f["index"], "value": val})
-    return answers
-
+# ── Timing constants (milliseconds) ──────────────────────────────────────────
+SETTLE_MS  = 300   # after click, before reading DOM
+SEARCH_MS  = 600   # after typing into search box, before reading results
+SAVE_MS    = 3000  # after save/continue, before polling heading
+MEDIUM_MS  = 1500  # medium settle (e.g. after dialog save)
 
 # ── DOM scanner ───────────────────────────────────────────────────────────────
 
@@ -746,9 +252,11 @@ SCAN_JS = r"""(rootSel) => {
 
         // Detect if this input is inside a Workday selectinput widget
         // NOTE: On some tenants (RH), the <input> itself has data-uxi-widget-type="selectinput"
+        // NOTE: On some tenants (Salesforce wd12+), school/FoS use role="combobox" instead
         const inSelectInput = !!(
             el.getAttribute('data-uxi-widget-type') === 'selectinput' ||
-            el.closest('[data-uxi-widget-type="selectinput"]')
+            el.closest('[data-uxi-widget-type="selectinput"]') ||
+            el.getAttribute('role') === 'combobox'
         );
 
         // For selectinput: collect available options from the listbox if already open,
@@ -878,6 +386,18 @@ async def get_heading(page: Page) -> str:
 MONTH_NUM = {"january":"01","february":"02","march":"03","april":"04","may":"05","june":"06",
              "july":"07","august":"08","september":"09","october":"10","november":"11","december":"12"}
 
+async def locate_field(page, field: dict):
+    """Locate a Workday form element by data-fill-idx, id, or automation-id."""
+    idx = field["index"]
+    fid = field.get("id", "")
+    loc = page.locator(f'[data-fill-idx="{idx}"]').first
+    if not await loc.is_visible(timeout=800):
+        if fid:
+            loc = page.locator(f'#{fid}').first
+        if not await loc.is_visible(timeout=800):
+            loc = page.locator(f'[data-automation-id="{fid}"]').first
+    return loc
+
 async def exec_text(page: Page, field: dict, value: str):
     # Convert month name to number if it looks like a date section input
     label_l = field.get("label","").lower()
@@ -891,16 +411,18 @@ async def exec_text(page: Page, field: dict, value: str):
     # scroll_into_view causes repeated re-scrolling. Fill directly via JS instead.
     is_date_part = label_l.strip("* ") in ("month", "year", "day")
     if is_date_part:
-        await page.evaluate(f"""() => {{
-            const el = document.querySelector('[data-fill-idx="{idx}"]') || document.getElementById('{fid}');
-            if (!el) return;
-            el.focus();
-            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-            if (setter) setter.call(el, '{value}');
-            else el.value = '{value}';
-            el.dispatchEvent(new Event('input', {{bubbles: true}}));
-            el.dispatchEvent(new Event('change', {{bubbles: true}}));
-        }}""")
+        await page.evaluate("(args) => { "
+            "const el = document.querySelector('[data-fill-idx=\"' + args.idx + '\"]') "
+            "           || document.getElementById(args.fid); "
+            "if (!el) return; "
+            "el.focus(); "
+            "const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set; "
+            "if (setter) setter.call(el, args.value); "
+            "else el.value = args.value; "
+            "el.dispatchEvent(new Event('input', {bubbles: true})); "
+            "el.dispatchEvent(new Event('change', {bubbles: true})); "
+            "el.dispatchEvent(new FocusEvent('blur', {bubbles: true, cancelable: true})); "
+            "}", {"idx": idx, "fid": fid, "value": value})
         print(f"    ✓ text  [{idx}] {field['label']!r} = {value!r} (JS date fill)")
         return
 
@@ -912,33 +434,36 @@ async def exec_text(page: Page, field: dict, value: str):
     try:
         await el.scroll_into_view_if_needed(timeout=5000)
         await page.keyboard.press("Escape")   # close any open dropdown first
-        await page.wait_for_timeout(200)
+        await page.wait_for_timeout(SETTLE_MS)
         await el.click(click_count=3, timeout=8000)
     except Exception:
         # JS fallback: scroll + dispatch click
-        await page.evaluate(f"""() => {{
-            const el = document.querySelector('[data-fill-idx="{idx}"]') || document.getElementById('{fid}');
-            if (el) {{ el.scrollIntoView({{block:'center'}}); el.click(); }}
-        }}""")
-        await page.wait_for_timeout(200)
+        await page.evaluate("(args) => { "
+            "const el = document.querySelector('[data-fill-idx=\"' + args.idx + '\"]') "
+            "           || document.getElementById(args.fid); "
+            "if (el) { el.scrollIntoView({block:'center'}); el.click(); } "
+            "}", {"idx": idx, "fid": fid})
+        await page.wait_for_timeout(SETTLE_MS)
 
     await el.fill(value)
     # Trigger React synthetic events so React's internal state stays in sync with the DOM value
-    await page.evaluate(f"""() => {{
-        const el = document.querySelector('[data-fill-idx="{idx}"]') || document.getElementById('{fid}');
-        if (!el) return;
-        try {{
-            const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-            const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-            if (setter) setter.call(el, el.value);
-        }} catch(e) {{}}
-        el.dispatchEvent(new Event('input', {{bubbles: true}}));
-        el.dispatchEvent(new Event('change', {{bubbles: true}}));
-    }}""")
+    await page.evaluate("(args) => { "
+        "const el = document.querySelector('[data-fill-idx=\"' + args.idx + '\"]') "
+        "           || document.getElementById(args.fid); "
+        "if (!el) return; "
+        "try { "
+        "    const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; "
+        "    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set; "
+        "    if (setter) setter.call(el, el.value); "
+        "} catch(e) {} "
+        "el.dispatchEvent(new Event('input', {bubbles: true})); "
+        "el.dispatchEvent(new Event('change', {bubbles: true})); "
+        "}", {"idx": idx, "fid": fid})
 
     print(f"    ✓ text  [{idx}] {field['label']!r} = {value!r}")
 
 async def exec_button_dropdown(page: Page, field: dict, value: str):
+    label = field.get("label", "")
     sel = f"[data-fill-idx='{field['index']}']"
     btn = page.locator(sel).first
     fid = field.get("id","")
@@ -951,13 +476,14 @@ async def exec_button_dropdown(page: Page, field: dict, value: str):
     await btn.scroll_into_view_if_needed()
     # If button is already expanded (still open from prefetch), close it first
     try:
-        is_expanded = await page.evaluate(f"""() => {{
-            const el = document.querySelector('[data-fill-idx="{field["index"]}"]');
-            return el ? el.getAttribute('aria-expanded') === 'true' : false;
-        }}""")
+        fidx = field["index"]
+        is_expanded = await page.evaluate("(idx) => { "
+            "const el = document.querySelector('[data-fill-idx=\"' + idx + '\"]'); "
+            "return el ? el.getAttribute('aria-expanded') === 'true' : false; "
+            "}", fidx)
         if is_expanded:
             await btn.click()
-            await page.wait_for_timeout(600)
+            await page.wait_for_timeout(SEARCH_MS)
     except Exception:
         pass
     await btn.click()
@@ -981,20 +507,38 @@ async def exec_button_dropdown(page: Page, field: dict, value: str):
         # Skip disabled "Select One" — fall back to first non-disabled option
         non_disabled = [o for o in opts if o.lower() not in ('select one', '')]
         if non_disabled:
-            match = fuzzy_pick(non_disabled, value) or non_disabled[0]
+            match = fuzzy_pick(non_disabled, value)
+            if not match:
+                # D1b: for compliance/consent fields, prefer a decline option; for others use first
+                if label_match(label, "gender", "sex", "race", "ethnicity", "hispanic",
+                               "veteran", "disability"):
+                    decline = pick_decline(non_disabled)
+                    if decline:
+                        match = decline
+                    else:
+                        print(f"  [skip] compliance field has no matching option: {label!r}")
+                        await page.keyboard.press("Escape")
+                        return
+                else:
+                    match = non_disabled[0]
         elif opts:
             match = opts[0]
     if match and match.lower() != 'select one':
         try:
-            await page.locator(f"li[role='option']:has-text('{match[:50]}')").first.wait_for(state="visible", timeout=5000)
-            # Use exact text filter to avoid "Male" matching "Female" (substring issue)
-            opt_loc = (page.locator(f"li[role='option']")
+            # Use Playwright's filter (safe with apostrophes, quotes, etc.) — no CSS injection
+            opt_loc = (page.locator("li[role='option']")
                        .filter(has_text=re.compile(r'^\s*' + re.escape(match[:50]) + r'\s*$'))
                        .first)
             if not await opt_loc.count():
-                # Fallback: has-text (less precise but better than nothing)
-                opt_loc = page.locator(f"li[role='option']:has-text('{match[:50]}')").first
+                # Fallback: filter by has_text (partial, less precise but safe)
+                opt_loc = page.locator("li[role='option']").filter(has_text=match[:50]).first
+            await opt_loc.wait_for(state="visible", timeout=5000)
             await opt_loc.click()
+            await page.wait_for_timeout(SEARCH_MS)  # wait for React to process the selection
+            # Press Tab to trigger blur and commit React state (important for inline forms)
+            await page.keyboard.press("Tab")
+            await page.wait_for_timeout(400)  # let blur/onChange complete
+            await page.keyboard.press("Tab")
             print(f"    ✓ drop  [{field['index']}] {field['label']!r} = {match!r}")
         except Exception as e:
             await page.keyboard.press("Escape")
@@ -1025,17 +569,17 @@ async def exec_selectinput(page: Page, field: dict, value: str):
         await inp.scroll_into_view_if_needed(timeout=5000)
         await inp.click(force=True, timeout=5000)
     except Exception:
-        await page.evaluate(f"""() => {{
-            const el = document.querySelector('[data-fill-idx="{idx}"]');
-            if (el) {{ el.scrollIntoView({{block:'center'}}); el.click(); }}
-        }}""")
+        await page.evaluate("(idx) => { "
+            "const el = document.querySelector('[data-fill-idx=\"' + idx + '\"]'); "
+            "if (el) { el.scrollIntoView({block:'center'}); el.click(); } "
+            "}", idx)
     await page.wait_for_timeout(400)
 
     for term_idx, term in enumerate(terms):
         # Clear any existing text and type the search term
         await inp.click(click_count=3, force=True)
         await inp.type(term, delay=70)
-        await page.wait_for_timeout(300)
+        await page.wait_for_timeout(SETTLE_MS)
 
         # Press Enter to trigger Workday's server-side search filter
         await inp.press("Enter")
@@ -1043,39 +587,43 @@ async def exec_selectinput(page: Page, field: dict, value: str):
 
         # Read only VISIBLE options (height > 0) — critical for Workday virtual scroll:
         # filtered results show height > 0; non-matching hidden items have height = 0
-        results = await page.evaluate(f"""() => {{
+        results = await page.evaluate("""() => {
             const getVisible = (c) => Array.from(c.querySelectorAll('[role="option"]'))
                 .filter(e => e.getBoundingClientRect().height > 0)
                 .map(e => e.innerText.trim()).filter(Boolean);
             const c1 = Array.from(document.querySelectorAll('[data-automation-id="activeListContainer"]'))
                 .find(x => x.getBoundingClientRect().height > 0);
-            if (c1) {{ const o = getVisible(c1); if (o.length) return o; }}
+            if (c1) { const o = getVisible(c1); if (o.length) return o; }
             const poppers = Array.from(document.querySelectorAll('[data-popper-placement]'))
                 .filter(x => x.getBoundingClientRect().height > 0);
-            for (const p of poppers) {{ const o = getVisible(p); if (o.length) return o; }}
+            for (const p of poppers) { const o = getVisible(p); if (o.length) return o; }
             return [];
-        }}""")
+        }""")
 
         print(f"    [sel] search={term!r} results ({len(results)}): {results[:5]}")
 
         if not results:
             # Maybe auto-filled as single pill (Workday collapses single-match to pill)
-            pill = await page.evaluate(f"""() => {{
-                const fid = '{fid}';
-                const el = fid ? document.getElementById(fid) : document.querySelector('[data-fill-idx="{idx}"]');
-                const fw = el?.closest('[data-automation-id^="formField"]') || el?.parentElement;
-                const pill = fw?.querySelector('[data-automation-id="selectedItem"]');
-                if (pill && pill.getBoundingClientRect().height > 0) return pill.innerText.trim();
-                return null;
-            }}""")
+            pill = await page.evaluate("(args) => { "
+                "const el = args.fid ? document.getElementById(args.fid) "
+                "           : document.querySelector('[data-fill-idx=\"' + args.idx + '\"]'); "
+                "const fw = el?.closest('[data-automation-id^=\"formField\"]') || el?.parentElement; "
+                "const pill = fw?.querySelector('[data-automation-id=\"selectedItem\"]'); "
+                "if (pill && pill.getBoundingClientRect().height > 0) return pill.innerText.trim(); "
+                "return null; "
+                "}", {"fid": fid, "idx": idx})
             if pill:
+                # Tab to trigger blur/onChange and commit the selected value to React state.
+                # Use a longer wait to allow AJAX auto-save to complete (especially in headed mode).
+                await inp.press("Tab")
+                await page.wait_for_timeout(1200)
                 print(f"    ✓ sel   [{idx}] {field['label']!r} = {pill!r} (auto-filled single result)")
                 return
             # Try next fallback term
             if term_idx < len(terms) - 1:
                 print(f"    ~ sel   no results for {term!r}, trying fallback {terms[term_idx+1]!r}...")
                 await inp.press("Escape")
-                await page.wait_for_timeout(300)
+                await page.wait_for_timeout(SETTLE_MS)
                 continue
             print(f"    ~ sel   [{idx}] {field['label']!r} — no results for any term: {terms}")
             await inp.press("Escape")
@@ -1088,7 +636,7 @@ async def exec_selectinput(page: Page, field: dict, value: str):
         if not any(w in first_l for w in term_words) and term_idx < len(terms) - 1:
             print(f"    ~ sel   results unfiltered for {term!r} (first: {results[0]!r}), trying fallback {terms[term_idx+1]!r}...")
             await inp.press("Escape")
-            await page.wait_for_timeout(300)
+            await page.wait_for_timeout(SETTLE_MS)
             continue
 
         # Pick best match from filtered results
@@ -1109,88 +657,99 @@ async def exec_selectinput(page: Page, field: dict, value: str):
         except Exception:
             # Fallback: JS click
             match_lower = match[:60].lower()
-            clicked = await page.evaluate(f"""() => {{
-                const getVisible = (c) => Array.from(c.querySelectorAll('[role="option"]'))
-                    .filter(e => e.getBoundingClientRect().height > 0);
-                let opts = [];
-                const c1 = Array.from(document.querySelectorAll('[data-automation-id="activeListContainer"]'))
-                    .find(x => x.getBoundingClientRect().height > 0);
-                if (c1) opts = getVisible(c1);
-                if (!opts.length) {{
-                    const poppers = Array.from(document.querySelectorAll('[data-popper-placement]'))
-                        .filter(x => x.getBoundingClientRect().height > 0);
-                    for (const p of poppers) {{ const o = getVisible(p); if (o.length) {{ opts = o; break; }} }}
-                }}
-                const target = opts.find(e => e.innerText.trim().toLowerCase() === '{match_lower}') ||
-                               opts.find(e => e.innerText.trim().toLowerCase().includes('{match_lower}')) ||
-                               opts[0];
-                if (target) {{
-                    target.scrollIntoView({{block:'nearest'}});
-                    target.dispatchEvent(new MouseEvent('mousedown', {{bubbles:true}}));
-                    target.click();
-                    return target.innerText.trim();
-                }}
-                return null;
-            }}""")
-        await page.wait_for_timeout(400)
-        # Close dropdown cleanly
-        await inp.press("Escape")
-        await page.wait_for_timeout(200)
+            clicked = await page.evaluate("(matchStr) => { "
+                "const getVisible = (c) => Array.from(c.querySelectorAll('[role=\"option\"]')) "
+                "    .filter(e => e.getBoundingClientRect().height > 0); "
+                "let opts = []; "
+                "const c1 = Array.from(document.querySelectorAll('[data-automation-id=\"activeListContainer\"]')) "
+                "    .find(x => x.getBoundingClientRect().height > 0); "
+                "if (c1) opts = getVisible(c1); "
+                "if (!opts.length) { "
+                "    const poppers = Array.from(document.querySelectorAll('[data-popper-placement]')) "
+                "        .filter(x => x.getBoundingClientRect().height > 0); "
+                "    for (const p of poppers) { const o = getVisible(p); if (o.length) { opts = o; break; } } "
+                "} "
+                "const target = opts.find(e => e.innerText.trim().toLowerCase() === matchStr) || "
+                "               opts.find(e => e.innerText.trim().toLowerCase().includes(matchStr)) || "
+                "               opts[0]; "
+                "if (target) { "
+                "    target.scrollIntoView({block:'nearest'}); "
+                "    target.dispatchEvent(new MouseEvent('mousedown', {bubbles:true})); "
+                "    target.click(); "
+                "    return target.innerText.trim(); "
+                "} "
+                "return null; "
+                "}", match_lower)
+        await page.wait_for_timeout(SETTLE_MS)
+        # Tab to trigger blur/onChange and commit React state.
+        # Longer wait than Escape to allow AJAX auto-save to complete.
+        await page.keyboard.press("Tab")
+        await page.wait_for_timeout(1200)
         print(f"    {'✓' if clicked else '~'} sel   [{idx}] {field['label']!r} = {clicked or match!r}")
         return
 
 async def exec_radio(page: Page, field: dict, value: str):
     """Click the correct radio in a group, works for both [role=radio] and input[type=radio]."""
+    label = field.get("label", "")
     texts = field.get("options") or []
     radio_values = field.get("radioValues") or []
     radio_name = field.get("name") or ""
 
-    match = fuzzy_pick(texts, value) or (texts[0] if texts else value)
+    match = fuzzy_pick(texts, value)
+    if not match:
+        # D1b: for compliance/consent fields, don't fall back to first option
+        if label_match(label, "gender", "sex", "race", "ethnicity", "hispanic",
+                       "veteran", "disability"):
+            print(f"  [skip] compliance radio has no matching option: {label!r} (value={value!r})")
+            return
+        match = texts[0] if texts else value
     match_idx = texts.index(match) if match in texts else 0
     target_value = radio_values[match_idx] if match_idx < len(radio_values) else None
 
     # Strategy 1: input[type=radio][name=...][value=...] — stable for RH-style
+    # Pass as args to avoid breaking on values containing quotes/backslashes
     if radio_name and target_value is not None:
-        clicked = await page.evaluate(f"""() => {{
-            const r = document.querySelector('input[type="radio"][name="{radio_name}"][value="{target_value}"]');
-            if (r) {{ r.click(); return true; }}
-            return false;
-        }}""")
+        clicked = await page.evaluate("(args) => { "
+            "const r = document.querySelector("
+            "  'input[type=\"radio\"][name=\"' + args.name + '\"][value=\"' + args.val + '\"]'"
+            "); "
+            "if (r) { r.click(); return true; } "
+            "return false; "
+            "}", {"name": radio_name, "val": target_value})
         if clicked:
             print(f"    ✓ radio [{field['index']}] {field['label']!r} = {match!r} (name/value)")
             return
 
-    # Strategy 2: [role=radio] by aria-label
+    # Strategy 2: [role=radio] by aria-label — use Playwright filter (no CSS string injection)
     match_lower = match[:30].lower()
-    escaped = match[:50].replace("'", "\\'")
-    for sel in [f"[role='radio'][aria-label='{escaped}']", f"[role='radio']:has-text('{escaped}')"]:
-        opt = page.locator(sel).first
-        if await opt.count():
-            await opt.scroll_into_view_if_needed()
-            await opt.click(force=True)
-            print(f"    ✓ radio [{field['index']}] {field['label']!r} = {match!r} (role/aria-label)")
-            return
+    # Try aria-label exact match via Playwright locator (safe with any character)
+    opt = page.locator("[role='radio']").filter(has_text=match[:50]).first
+    if await opt.count():
+        await opt.scroll_into_view_if_needed()
+        await opt.click(force=True)
+        print(f"    ✓ radio [{field['index']}] {field['label']!r} = {match!r} (role/filter)")
+        return
 
-    # Strategy 3: JS walk up from tagged element
-    clicked = await page.evaluate(f"""() => {{
-        const tagged = document.querySelector('[data-fill-idx="{field["index"]}"]');
-        if (!tagged) return false;
-        let parent = tagged.parentElement;
-        for (let i = 0; i < 8 && parent; i++) {{
-            const radios = Array.from(parent.querySelectorAll('[role="radio"],input[type="radio"]'));
-            if (radios.length) {{
-                const r = radios.find(r => {{
-                    const lbl = (r.getAttribute('aria-label') || r.parentElement?.innerText || '').toLowerCase();
-                    return lbl.includes('{match_lower}');
-                }}) || radios[{match_idx}];
-                if (r) {{ r.click(); return true; }}
-            }}
-            parent = parent.parentElement;
-        }}
-        return false;
-    }}""")
+    # Strategy 3: JS walk up from tagged element — pass match_lower as arg
+    clicked = await page.evaluate("(args) => { "
+        "const tagged = document.querySelector('[data-fill-idx=\"' + args.idx + '\"]'); "
+        "if (!tagged) return false; "
+        "let parent = tagged.parentElement; "
+        "for (let i = 0; i < 8 && parent; i++) { "
+        "    const radios = Array.from(parent.querySelectorAll('[role=\"radio\"],input[type=\"radio\"]')); "
+        "    if (radios.length) { "
+        "        const r = radios.find(r => { "
+        "            const lbl = (r.getAttribute('aria-label') || r.parentElement?.innerText || '').toLowerCase(); "
+        "            return lbl.includes(args.match); "
+        "        }) || radios[args.matchIdx]; "
+        "        if (r) { r.click(); return true; } "
+        "    } "
+        "    parent = parent.parentElement; "
+        "} "
+        "return false; "
+        "}", {"idx": field["index"], "match": match_lower, "matchIdx": match_idx})
     print(f"    {'✓' if clicked else '~'} radio [{field['index']}] {field['label']!r} = {match!r} (options: {texts})")
-    await page.wait_for_timeout(500)
+    await page.wait_for_timeout(SETTLE_MS)
 
 
 async def exec_checkbox(page: Page, field: dict, value: str):
@@ -1201,11 +760,12 @@ async def exec_checkbox(page: Page, field: dict, value: str):
     if not await el.count() and fid:
         el = page.locator(f"#{fid}").first
     # Check current state
-    current_checked = await page.evaluate(f"""() => {{
-        const el = document.querySelector('[data-fill-idx="{idx}"]') || document.getElementById('{fid}');
-        if (!el) return null;
-        return el.checked || el.getAttribute('aria-checked') === 'true';
-    }}""")
+    current_checked = await page.evaluate("(args) => { "
+        "const el = document.querySelector('[data-fill-idx=\"' + args.idx + '\"]') "
+        "           || document.getElementById(args.fid); "
+        "if (!el) return null; "
+        "return el.checked || el.getAttribute('aria-checked') === 'true'; "
+        "}", {"idx": idx, "fid": fid})
     if (want and current_checked) or (not want and not current_checked):
         print(f"    ✓ check [{idx}] {field['label']!r} = {value!r} (already set)")
         return
@@ -1231,35 +791,34 @@ async def exec_checkbox(page: Page, field: dict, value: str):
             pass
     if not clicked:
         # Strategy 3: Find and click the visible wrapper/label via JS
-        clicked = await page.evaluate(f"""() => {{
-            const el = document.querySelector('[data-fill-idx="{idx}"]') || document.getElementById('{fid}');
-            if (!el) return false;
-            // Try associated label first
-            const lbl = document.querySelector('label[for="{fid}"]');
-            if (lbl && lbl.getBoundingClientRect().height > 0) {{ lbl.click(); return true; }}
-            // Walk up to find visible parent wrapper
-            let node = el.parentElement;
-            for (let i=0; i<6 && node; i++) {{
-                const rect = node.getBoundingClientRect();
-                if (rect.height > 5 && rect.width > 5) {{
-                    // Prefer Workday checkbox automation containers
-                    const cbChild = node.querySelector('[data-automation-id*="checkbox"],[class*="checkbox"],[role="checkbox"]');
-                    if (cbChild) {{ cbChild.click(); return true; }}
-                    node.click();
-                    return true;
-                }}
-                node = node.parentElement;
-            }}
-            el.click();
-            el.dispatchEvent(new Event('change', {{bubbles: true}}));
-            return true;
-        }}""")
-    await page.wait_for_timeout(400)
+        clicked = await page.evaluate("(args) => { "
+            "const el = document.querySelector('[data-fill-idx=\"' + args.idx + '\"]') "
+            "           || document.getElementById(args.fid); "
+            "if (!el) return false; "
+            "const lbl = args.fid ? document.querySelector('label[for=\"' + args.fid + '\"]') : null; "
+            "if (lbl && lbl.getBoundingClientRect().height > 0) { lbl.click(); return true; } "
+            "let node = el.parentElement; "
+            "for (let i=0; i<6 && node; i++) { "
+            "    const rect = node.getBoundingClientRect(); "
+            "    if (rect.height > 5 && rect.width > 5) { "
+            "        const cbChild = node.querySelector('[data-automation-id*=\"checkbox\"],[class*=\"checkbox\"],[role=\"checkbox\"]'); "
+            "        if (cbChild) { cbChild.click(); return true; } "
+            "        node.click(); "
+            "        return true; "
+            "    } "
+            "    node = node.parentElement; "
+            "} "
+            "el.click(); "
+            "el.dispatchEvent(new Event('change', {bubbles: true})); "
+            "return true; "
+            "}", {"idx": idx, "fid": fid})
+    await page.wait_for_timeout(SETTLE_MS)
     # Verify the state changed
-    after = await page.evaluate(f"""() => {{
-        const el = document.querySelector('[data-fill-idx="{idx}"]') || document.getElementById('{fid}');
-        return el ? (el.checked || el.getAttribute('aria-checked') === 'true') : null;
-    }}""")
+    after = await page.evaluate("(args) => { "
+        "const el = document.querySelector('[data-fill-idx=\"' + args.idx + '\"]') "
+        "           || document.getElementById(args.fid); "
+        "return el ? (el.checked || el.getAttribute('aria-checked') === 'true') : null; "
+        "}", {"idx": idx, "fid": fid})
     print(f"    ✓ check [{idx}] {field['label']!r} = {value!r} (verified={after})")
 
 async def execute_answer(page: Page, field: dict, value: str):
@@ -1281,7 +840,7 @@ async def execute_answer(page: Page, field: dict, value: str):
         elif tag == "select":
             el = page.locator(f"[data-fill-idx='{field['index']}']").first
             try: await el.select_option(label=value, timeout=3000)
-            except: await exec_button_dropdown(page, field, value)
+            except Exception: await exec_button_dropdown(page, field, value)
             print(f"    ✓ sel   [{field['index']}] {field['label']!r} = {value!r}")
         else:
             await exec_text(page, field, value)
@@ -1301,25 +860,9 @@ async def save_and_continue(page: Page) -> bool:
         print(f"  [NAV] No Next button found — page may not be ready")
         await page.wait_for_timeout(2000)
         return False
-    await page.wait_for_timeout(3000)
-    # Check for validation errors (errorMessage only — aria-invalid unreliable on selectinputs)
-    errors = await page.evaluate("""() => {
-        const errs = [];
-        document.querySelectorAll('[data-automation-id="errorMessage"]').forEach(e => {
-            if (e.getBoundingClientRect().height > 0) {
-                const t = e.innerText?.trim();
-                if (t) errs.push(t);
-            }
-        });
-        // Also check general visible validation-related text
-        document.querySelectorAll('[class*="error"],[class*="Error"],[class*="invalid"],[class*="Invalid"]').forEach(e => {
-            if (e.getBoundingClientRect().height > 0 && e.childElementCount === 0) {
-                const t = e.innerText?.trim();
-                if (t && t.length < 200) errs.push(t);
-            }
-        });
-        return [...new Set(errs)].slice(0, 10);
-    }""")
+    await page.wait_for_timeout(SAVE_MS)
+    # Check for validation errors
+    errors = await read_validation_errors(page)
     if errors:
         print(f"  [NAV] Validation errors: {errors}")
         # Also print any visible "required" field labels
@@ -1372,6 +915,55 @@ async def save_and_continue(page: Page) -> bool:
         print(f"  [NAV] page error hints: {page_hints}")
     return False
 
+async def read_validation_errors(page) -> list[str]:
+    """Return list of visible validation error messages and red-outlined field labels."""
+    errors = await page.evaluate("""() => {
+        const errs = [];
+        document.querySelectorAll('[data-automation-id="errorMessage"]').forEach(e => {
+            if (e.getBoundingClientRect().height > 0) {
+                const t = e.innerText?.trim();
+                if (t) errs.push(t);
+            }
+        });
+        document.querySelectorAll('[data-automation-id="validation-error-section"] li, '
+                                 + '.css-1dbjc4n [role="list"] li').forEach(e => {
+            if (e.getBoundingClientRect().height > 0) {
+                const t = e.innerText?.trim();
+                if (t && t.startsWith('Error')) errs.push(t.slice(0, 80));
+            }
+        });
+        document.querySelectorAll('[class*="error"],[class*="Error"],[class*="invalid"],[class*="Invalid"]').forEach(e => {
+            if (e.getBoundingClientRect().height > 0 && e.childElementCount === 0) {
+                const t = e.innerText?.trim();
+                if (t && t.length < 200) errs.push(t);
+            }
+        });
+        return [...new Set(errs)].slice(0, 10);
+    }""")
+    return errors
+
+async def save_and_continue_with_report(page: Page):
+    """save_and_continue wrapper that returns (ok, errors, req_labels) for the run report.
+    Captures the validation errors and required-field labels that save_and_continue prints,
+    so the main loop can include them in run_report.json without re-querying the DOM."""
+    ok = await save_and_continue(page)
+    # Re-read validation errors after the attempt (may have been cleared on success)
+    if not ok:
+        errors = await read_validation_errors(page)
+        req_labels = await page.evaluate("""() => {
+            return Array.from(document.querySelectorAll('[aria-required="true"],[aria-invalid="true"]'))
+                .filter(e => e.getBoundingClientRect().height > 0)
+                .map(e => {
+                    const fw = e.closest('[data-automation-id="formField"]');
+                    const lbl = fw?.querySelector('[data-automation-id="formLabel"],label')?.innerText
+                              || e.getAttribute('aria-label') || '';
+                    return lbl.trim();
+                }).filter(Boolean).slice(0, 10);
+        }""")
+    else:
+        errors, req_labels = [], []
+    return ok, errors, req_labels
+
 # ── Pre-fetch options for all button-dropdowns on a page ─────────────────────
 
 async def prefetch_options(page: Page, fields: list[dict]):
@@ -1396,7 +988,7 @@ async def prefetch_options(page: Page, fields: list[dict]):
                 await page.keyboard.press("Escape")
                 await page.wait_for_timeout(400)
                 print(f"    [{f['index']:2}] opts {f['label']!r}: {opts[:5]}{'...' if len(opts)>5 else ''}")
-            except: pass
+            except Exception as e: print(f"  [prefetch] {e}")
 
 # ── Smart page filler: DeepSeek primary, rule-based fallback ─────────────────
 
@@ -1406,7 +998,7 @@ async def smart_fill_page(page: Page, heading: str, context_hint: str = "",
 
     # Scroll to bottom then top to trigger lazy-rendering of all form sections
     await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
-    await page.wait_for_timeout(600)
+    await page.wait_for_timeout(SEARCH_MS)
     await page.evaluate("() => window.scrollTo(0, 0)")
     await page.wait_for_timeout(400)
 
@@ -1432,19 +1024,37 @@ async def smart_fill_page(page: Page, heading: str, context_hint: str = "",
 
     # Pre-fetch options for all button-dropdowns
     await prefetch_options(page, fillable)
-    await page.wait_for_timeout(600)  # let page settle after prefetch opens/closes
+    await page.wait_for_timeout(SEARCH_MS)  # let page settle after prefetch opens/closes
 
     # Date spinbuttons (Month/Day/Year) are deterministic — always use rule-based answers
     # regardless of DeepSeek mode.  They have no options list so the LLM can't reason
     # about them, and it may return wrong format ("July" instead of "07") or skip them.
-    import datetime as _dt
     _date_labels = {"month", "day", "year"}
-    avail = _dt.date.today() + _dt.timedelta(weeks=2)
+    avail = datetime.date.today() + datetime.timedelta(weeks=2)
     _date_answers = {
         "month": str(avail.month).zfill(2),
         "day":   str(avail.day).zfill(2),
         "year":  str(avail.year),
     }
+    # Override with graduation date if the page contains graduation-related context
+    # (e.g., Application Questions page with "anticipated graduation date" question)
+    _page_text_lower = (context_hint or heading or "").lower()
+    # Also check visible labels on this page for graduation context
+    _all_labels_lower = " ".join(f.get("label","") for f in fillable).lower()
+    # Also detect via "school location" + date spinbuttons on same page (Salesforce App Q 2 pattern)
+    _has_school_context = ("graduation" in _all_labels_lower or "graduation" in _page_text_lower
+                           or ("school location" in _all_labels_lower and
+                               any(f["label"].strip("* ").lower() in _date_labels for f in fillable))
+                           or "anticipated" in _all_labels_lower or "anticipated" in _page_text_lower)
+    if _has_school_context:
+        _school = next((e for e in EDU if "attending" in e.get("current_status","").lower()), None)
+        if _school:
+            _end_month_num = MONTH_NUM.get(_school.get("end_month","").lower(), "")
+            if _end_month_num:
+                _date_answers["month"] = _end_month_num
+            _date_answers["day"] = "01"
+            if _school.get("end_year"):
+                _date_answers["year"] = str(_school["end_year"])
     date_spinbuttons = [
         f for f in fillable
         if f.get("tag") in ("input",) and not f.get("options")
@@ -1531,14 +1141,14 @@ async def ensure_signed_in(page: Page):
     # Determine credentials — per-tenant first, fallback to personal_info
     current_url = page.url
     tenant = ""
-    import re as _re2
-    m = _re2.search(r'https://([^.]+)\.wd\d+\.myworkdayjobs\.com', current_url)
+    m = re.search(r'https://([^.]+)\.wd\d+\.myworkdayjobs\.com', current_url)
     if m:
         tenant = m.group(1)
     workday_accounts = LIBRARY.get("workday_accounts", {})
     creds = workday_accounts.get(tenant) or workday_accounts.get("default") or {}
     use_email    = creds.get("email", EMAIL)
-    use_password = creds.get("password", PASSWORD)
+    # PASSWORD is already env-sourced; ignore any plaintext password stored in library.json
+    use_password = PASSWORD or creds.get("password", "")
     print(f"[AUTH] Login wall detected (tenant={tenant!r}) — attempting auth with {use_email}...")
 
     async def _wait_past_login(timeout_s=25):
@@ -1751,8 +1361,7 @@ def entry_answer(field: dict, entry: dict, section_type: str) -> str | None:
                 return entry.get("company","")
             if label_match(label, "city", "location") and not label_match(label, "country","state"):
                 return entry.get("city","")
-            if label_match(label, "description","responsibilities","summary","duties"):
-                return entry.get("description","")[:500]
+            # (description already matched above — this branch is unreachable but kept for clarity)
             if label_match(label, "start month") or (label_match(label,"month") and date_seq=="start"):
                 return entry.get("start_month","")
             if label_match(label, "end month") or (label_match(label,"month") and date_seq=="end"):
@@ -1776,13 +1385,13 @@ def entry_answer(field: dict, entry: dict, section_type: str) -> str | None:
             if label_match(label, "start month") or (label_match(label,"month") and date_seq=="start"):
                 return entry.get("start_month","")
             if label_match(label, "end month","graduation month") or (label_match(label,"month") and date_seq=="end"):
-                cur = entry.get("current_status","").lower()
-                return "" if "attending" in cur else entry.get("end_month","")
-            if label_match(label, "start year","year from") or (label_match(label,"year") and date_seq=="start"):
+                return entry.get("end_month","")
+            if label_match(label, "start year","year from","from") or (label_match(label,"year") and date_seq=="start"):
                 return str(entry.get("start_year",""))
-            if label_match(label, "end year","year to","graduation year") or (label_match(label,"year") and date_seq=="end"):
-                cur = entry.get("current_status","").lower()
-                return "" if "attending" in cur else str(entry.get("end_year",""))
+            if label_match(label, "end year","year to","graduation year","to (actual","to actual","expected") or (label_match(label,"year") and date_seq=="end"):
+                # Always return end_year — for still-attending students, this is the EXPECTED graduation year
+                # Salesforce's "To (Actual or Expected)" field requires it; Cox hides it via "currently attend" checkbox
+                return str(entry.get("end_year",""))
 
     # ── Button dropdowns (month/degree pickers) ───────────────────────────────
     if tag == "button" or ftype == "select-one":
@@ -1819,8 +1428,7 @@ def entry_answer(field: dict, entry: dict, section_type: str) -> str | None:
             if label_match(label, "start month") or (label_match(label,"month") and date_seq=="start"):
                 return fuzzy_pick(opts, entry.get("start_month","")) or opts[0]
             if label_match(label, "end month","graduation month") or (label_match(label,"month") and date_seq=="end"):
-                cur = entry.get("current_status","").lower()
-                return "" if "attending" in cur else (fuzzy_pick(opts, entry.get("end_month","")) or opts[0])
+                return fuzzy_pick(opts, entry.get("end_month","")) or opts[0]
             if label_match(label, "currently attend","still attend","current student","present"):
                 cur = entry.get("current_status","").lower()
                 want = "Yes" if "attending" in cur else "No"
@@ -1850,38 +1458,42 @@ def entry_answer(field: dict, entry: dict, section_type: str) -> str | None:
     return None
 
 
+# Data-driven section spec for fill_add_dialog field isolation.
+# Each section_type maps to anchor keywords (first field in each repeated entry block)
+# and stop keywords (first field of the NEXT section, halts slicing).
+# Note: LANG has no anchor_kws — it uses field-diff instead (new fields only).
+SECTION_SPEC = {
+    "work": {
+        "anchor_kws": ("job title", "company", "employer", "position"),
+        "stop_kws": ("school or university", "school", "university", "degree",
+                     "type to add skills", "language", "website"),
+    },
+    "edu": {
+        "anchor_kws": ("school or university", "school", "university"),
+        "stop_kws": ("type to add skills", "language", "website", "job title"),
+    },
+    "lang": {
+        "anchor_kws": (),
+        "stop_kws": ("type to add skills", "website", "job title", "school",
+                     "upload a file", "linkedin", "provide your linkedin"),
+    },
+}
+
 async def fill_add_dialog(page: Page, dialog_label: str, entry: dict = None, section_type: str = "",
                           count_before: int = 0, fields_before: list = None):
     """Scan an open add-dialog, fill only the LAST (newly added) entry group."""
-    await page.wait_for_timeout(1500)  # give Workday's JS time to initialize dialog fields
+    await page.wait_for_timeout(MEDIUM_MS)  # give Workday's JS time to initialize dialog fields
     all_fields = await page.evaluate(SCAN_JS, None)
 
     # Identify the NEW entry by finding the last occurrence of its anchor field.
     # The anchor is the first field in each repeated entry block:
-    #   WE: "Job Title" | EDU: "School or University"
-    if section_type == "work":
-        anchor_kws = ["job title"]
-    elif section_type == "edu":
-        anchor_kws = ["school or university", "school", "university"]
-    elif section_type == "lang":
-        # Language dialog: new fields (Language NAME, Overall, R/S/W) are inserted
-        # at DOM positions that may be BELOW count_before (before Skills/resume section).
-        # Use proper field-diff to find new fields instead of count_before slice.
-        anchor_kws = []
-    else:
-        anchor_kws = []
+    #   WE: "Job Title" | EDU: "School or University" | LANG: field-diff
+    spec = SECTION_SPEC.get(section_type, {})
+    anchor_kws = spec.get("anchor_kws", ())
+    stop_kws   = spec.get("stop_kws", ())
 
     if anchor_kws:
-        # Section stop keywords — stop taking fields when we hit a field from the NEXT section
-        if section_type == "work":
-            stop_kws = ["school or university", "school", "university", "degree",
-                        "type to add skills", "language", "website"]
-        elif section_type == "edu":
-            stop_kws = ["type to add skills", "language", "website", "job title"]
-        else:  # lang
-            stop_kws = ["type to add skills", "website", "job title", "school",
-                        "upload a file", "linkedin", "provide your linkedin"]
-
+        # Anchor-based slicing: find last block starting at an anchor keyword field
         anchor_positions = [
             i for i, f in enumerate(all_fields)
             if any(kw in f.get("label","").lower() for kw in anchor_kws)
@@ -1902,24 +1514,22 @@ async def fill_add_dialog(page: Page, dialog_label: str, entry: dict = None, sec
         else:
             fields = all_fields[count_before:] if count_before > 0 else all_fields
     elif section_type == "lang" and fields_before is not None:
-        # Diff: find fields in all_fields that weren't in fields_before
-        # Build identity set for before-fields: (id|auto|label+tag)
+        # Language dialog: field-diff to find newly added fields
         def field_id(f):
             if f.get("id"): return "id:" + f["id"]
             if f.get("auto"): return "auto:" + f["auto"]
             return "lt:" + f.get("label","") + "|" + f.get("tag","")
         before_ids = set(field_id(f) for f in fields_before)
         fields = [f for f in all_fields if field_id(f) not in before_ids]
-        # Limit: stop at "Type to Add Skills" / LinkedIn (outside lang section)
-        stop_kws_lang = ["type to add skills", "upload a file", "linkedin", "provide your linkedin", "website"]
+        # Trim at "Type to Add Skills" / LinkedIn (outside lang section)
         trimmed = []
         for f in fields:
-            if any(kw in f.get("label","").lower() for kw in stop_kws_lang):
+            if any(kw in f.get("label","").lower() for kw in stop_kws):
                 break
             trimmed.append(f)
         fields = trimmed
     else:
-        # Not a WE/EDU dialog — use count_before tail (e.g. language, website)
+        # Not a WE/EDU/LANG dialog — use count_before tail
         fields = all_fields[count_before:] if count_before > 0 else all_fields
     for f in fields:
         f["page_heading"] = dialog_label
@@ -2000,6 +1610,11 @@ async def fill_add_dialog(page: Page, dialog_label: str, entry: dict = None, sec
             await page.wait_for_timeout(200)
 
     await page.wait_for_timeout(500)
+    # For EDU inline forms with combobox fields (School, FoS), add extra settle time
+    # to ensure AJAX auto-save completes before the next entry is added.
+    has_combobox = any(f.get("isSelectInput") for f in fillable)
+    if has_combobox and section_type == "edu":
+        await page.wait_for_timeout(1500)
     # Check for explicit per-entry Save/OK buttons (modal dialogs)
     # For inline accordion forms (like RH), there is NO per-entry save button — skip
     for ok_sel in [
@@ -2027,6 +1642,52 @@ PILLS_JS = """(args) => {
     const all = [...new Set([...items, ...global])];
     return all.map(e => e.innerText.trim().toLowerCase()).filter(Boolean);
 }"""
+
+# Shared JS to read visible [role=option] results from activeListContainer or popper.
+# Used by both exec_selectinput and exec_skills_field.
+_READ_VISIBLE_OPTIONS_JS = """() => {
+    const getOpts = (container) =>
+        Array.from(container.querySelectorAll('[role="option"],[data-automation-id="promptLeafNode"]'))
+            .filter(e => e.getBoundingClientRect().height > 0)
+            .map(e => e.innerText.trim());
+    const c1 = Array.from(document.querySelectorAll('[data-automation-id="activeListContainer"]'))
+        .find(x => x.getBoundingClientRect().height > 0);
+    if (c1) { const o = getOpts(c1); if (o.length) return o; }
+    const poppers = Array.from(document.querySelectorAll('[data-popper-placement]'))
+        .filter(x => x.getBoundingClientRect().height > 0);
+    for (const p of poppers) { const o = getOpts(p); if (o.length) return o; }
+    return [];
+}"""
+
+async def _type_and_pick_option(page, input_loc, search_term: str, best_match: str) -> bool:
+    """Type search_term into input_loc, wait for [role=option] results, click best_match.
+    Returns True if an option was successfully clicked."""
+    await input_loc.click(click_count=3, force=True)
+    await input_loc.type(search_term, delay=70)
+    await input_loc.press("Enter")
+    results = []
+    for _wait in [800, 800, 800, 600]:
+        await page.wait_for_timeout(_wait)
+        results = await page.evaluate(_READ_VISIBLE_OPTIONS_JS)
+        if results:
+            break
+    if not results:
+        return False
+    match = fuzzy_pick(results, best_match) or results[0]
+    opt_loc = (
+        page.locator('[data-automation-id="activeListContainer"] [role="option"],'
+                     '[data-popper-placement] [role="option"],'
+                     '[data-automation-id="activeListContainer"] [data-automation-id="promptLeafNode"],'
+                     '[data-popper-placement] [data-automation-id="promptLeafNode"]')
+        .filter(has_text=match[:60])
+        .first
+    )
+    try:
+        await opt_loc.wait_for(state="visible", timeout=3000)
+        await opt_loc.click(timeout=3000)
+        return True
+    except Exception:
+        return False
 
 async def exec_skills_field(page: Page, field: dict, skills: list[str]):
     """Fill a skills selectinput: for each skill, type → Enter → pick best match.
@@ -2199,15 +1860,15 @@ async def exec_skills_field(page: Page, field: dict, skills: list[str]):
             current_pills.add(best.lower())  # track so next skill can see this as already added
         except Exception as e:
             # Fallback: JS click if Playwright locator fails
-            clicked = await page.evaluate(f"""() => {{
-                const all = Array.from(document.querySelectorAll(
-                    '[role="option"],[data-automation-id="promptLeafNode"]'))
-                    .filter(e => e.getBoundingClientRect().height > 0);
-                const t = all.find(e => e.innerText.trim().toLowerCase() === '{best_lower}') ||
-                          all.find(e => e.innerText.trim().toLowerCase().includes('{best_lower}'));
-                if (t) {{ t.dispatchEvent(new MouseEvent('mousedown',{{bubbles:true}})); t.click(); return t.innerText.trim(); }}
-                return null;
-            }}""")
+            clicked = await page.evaluate("(bestStr) => { "
+                "const all = Array.from(document.querySelectorAll("
+                "    '[role=\"option\"],[data-automation-id=\"promptLeafNode\"]')) "
+                "    .filter(e => e.getBoundingClientRect().height > 0); "
+                "const t = all.find(e => e.innerText.trim().toLowerCase() === bestStr) || "
+                "          all.find(e => e.innerText.trim().toLowerCase().includes(bestStr)); "
+                "if (t) { t.dispatchEvent(new MouseEvent('mousedown',{bubbles:true})); t.click(); return t.innerText.trim(); } "
+                "return null; "
+                "}", best_lower)
             await page.wait_for_timeout(600)
             if clicked:
                 print(f"    ✓ skill '{skill}' → clicked {clicked!r} (JS fallback)")
@@ -2316,14 +1977,55 @@ async def handle_my_experience(page: Page):
                     return inp ? inp.value.trim() : '';
                 })"""
             else:  # edu
-                filled_check_js = """() => Array.from(
-                    document.querySelectorAll('[data-automation-id="formField-school"]')
-                ).map(el => {
-                    const pill = el.querySelector('[data-automation-id="selectedItem"]');
-                    if (pill && pill.innerText.trim()) return pill.innerText.trim();
-                    const inp = el.querySelector('input');
-                    return inp ? inp.value.trim() : '';
-                })"""
+                # formField-school only exists in the DOM when the accordion entry is EXPANDED.
+                # On tenants like Salesforce wd12, existing entries from prior runs are collapsed
+                # by default, so formField-school returns 0 and the bot adds duplicates.
+                # Fallback: scope to the nth add-button's containing section and count
+                # DELETE_charm buttons — those are always present whether collapsed or not.
+                edu_btn_idx = btn_info["index"]
+                filled_check_js = f"""() => {{
+                    const schools = Array.from(document.querySelectorAll('[data-automation-id="formField-school"]'));
+                    if (schools.length > 0) {{
+                        return schools.map(el => {{
+                            const pill = el.querySelector('[data-automation-id="selectedItem"]');
+                            if (pill && pill.innerText.trim()) return pill.innerText.trim();
+                            const inp = el.querySelector('input');
+                            return inp ? inp.value.trim() : '';
+                        }});
+                    }}
+                    // Fallback: count DELETE_charm buttons scoped to this section.
+                    // Also count undeletable pre-rendered blank rows (no DELETE_charm but has
+                    // a school input) — Salesforce wd12 spawns 1 blank EDU row that can't be deleted.
+                    const addBtns = Array.from(document.querySelectorAll('[data-automation-id="add-button"]'));
+                    const eduBtn = addBtns[{edu_btn_idx}];
+                    if (!eduBtn) return [];
+                    let node = eduBtn.parentElement;
+                    for (let i = 0; i < 8 && node && node !== document.body; i++) {{
+                        const dels = node.querySelectorAll('[data-automation-id="DELETE_charm"]');
+                        const schoolInputs = node.querySelectorAll('[data-automation-id="formField-school"] input, input[data-automation-id="school"]');
+                        const hasSchoolInputs = schoolInputs.length > 0;
+                        if (dels.length > 0 || hasSchoolInputs) {{
+                            // Build result: deleted-charm entries + undeletable blank slots
+                            const result = Array.from({{length: dels.length}}, (_, j) => 'existing_edu_' + j);
+                            // Count school inputs that have no sibling DELETE_charm in their ancestor chain
+                            for (const si of schoolInputs) {{
+                                let anc = si.parentElement;
+                                let hasDelete = false;
+                                for (let j = 0; j < 10 && anc && anc !== node; j++) {{
+                                    if (anc.querySelector('[data-automation-id="DELETE_charm"]')) {{
+                                        hasDelete = true;
+                                        break;
+                                    }}
+                                    anc = anc.parentElement;
+                                }}
+                                if (!hasDelete) result.push('');  // blank undeletable slot
+                            }}
+                            return result;
+                        }}
+                        node = node.parentElement;
+                    }}
+                    return [];
+                }}"""
 
             entry_values = await page.evaluate(filled_check_js)
             filled_count = sum(1 for v in entry_values if v)
@@ -2390,12 +2092,28 @@ async def handle_my_experience(page: Page):
                 print(f"  [ADD] '{btn_info['label']}' already fully filled ({filled_count}) — skipping adds")
                 continue
         elif section_type == "lang":
-            existing_count = await page.evaluate("""() =>
-                Array.from(document.querySelectorAll('button[data-automation-id="language"]'))
-                    .filter(el => {
-                        const t = el.textContent || '';
-                        return t.trim() !== '' && !t.includes('Select One');
-                    }).length""")
+            # Count language entries with a real language selected (aria-label = "Language <Name> Required")
+            existing_count = await page.evaluate("""() => {
+                const btns = Array.from(document.querySelectorAll('button'));
+                const lang_kws = ['afrikaans','albanian','amharic','arabic','armenian','azerbaijani',
+                    'basque','belarusian','bengali','bosnian','bulgarian','catalan','cebuano','chinese',
+                    'corsican','croatian','czech','danish','dutch','english','esperanto','estonian',
+                    'filipino','finnish','french','frisian','galician','georgian','german','greek',
+                    'gujarati','haitian','hausa','hawaiian','hebrew','hindi','hmong','hungarian',
+                    'icelandic','igbo','indonesian','irish','italian','japanese','javanese','kannada',
+                    'kazakh','khmer','kinyarwanda','korean','kurdish','kyrgyz','lao','latin','latvian',
+                    'lithuanian','luxembourgish','macedonian','malagasy','malay','malayalam','maltese',
+                    'maori','marathi','mongolian','myanmar','nepali','norwegian','odia','pashto',
+                    'persian','polish','portuguese','punjabi','romanian','russian','samoan','scots',
+                    'serbian','sesotho','shona','sindhi','sinhala','slovak','slovenian','somali',
+                    'spanish','sundanese','swahili','swedish','tajik','tamil','tatar','telugu','thai',
+                    'turkish','turkmen','ukrainian','urdu','uyghur','uzbek','vietnamese','welsh',
+                    'xhosa','yiddish','yoruba','zulu'];
+                return btns.filter(b => {
+                    const lbl = (b.getAttribute('aria-label') || '').toLowerCase();
+                    return lang_kws.some(kw => lbl.includes(kw));
+                }).length;
+            }""")
             filled_count = existing_count
             blank_count = 0
             if existing_count >= len(data_list):
@@ -2455,6 +2173,30 @@ async def handle_my_experience(page: Page):
                     add_btns = page.locator("[data-automation-id='add-button']")
                     btn = add_btns.nth(btn_info["index"])
             await page.wait_for_timeout(1500)
+
+            # After the first Add click for EDU, check whether Workday revealed a pre-rendered
+            # blank row in addition to the new row (Salesforce wd12 pattern: clicking Add for
+            # the first time expands a section that already contains 1 blank entry, so we get
+            # 2 rows instead of 1).  If so, promote blank_count so subsequent entries skip Add.
+            if section_type == "edu" and entry_idx == 0 and blank_count == 0:
+                post_click_vals = await page.evaluate("""() =>
+                    Array.from(document.querySelectorAll('[data-automation-id="formField-school"]'))
+                    .map(el => {
+                        const pill = el.querySelector('[data-automation-id="selectedItem"]');
+                        if (pill && pill.innerText.trim()) return pill.innerText.trim();
+                        const inp = el.querySelector('input');
+                        return inp ? inp.value.trim() : '';
+                    })""")
+                total_blank = sum(1 for v in post_click_vals if not v)
+                if total_blank > 1:
+                    # More blank slots than the 1 we just added — pre-rendered rows exist.
+                    # Set blank_count to total blank slots so all remaining entries (including
+                    # entry_idx=0 which we're about to fill now) use in-place fill logic.
+                    # entry_idx=1 will see 1 < total_blank and skip the Add click.
+                    blank_count = total_blank
+                    print(f"  [ADD] Detected {total_blank} blank EDU slots after first Add — "
+                          f"all will be filled in-place (no more Add clicks)")
+
             await fill_add_dialog(page, dialog_label, entry=entry, section_type=section_type,
                                   count_before=count_before, fields_before=fields_before)
             await page.wait_for_timeout(500)
@@ -2472,6 +2214,11 @@ async def handle_my_experience(page: Page):
         if skill_field:
             print(f"\n  [SKILLS] Filling {len(skills)} skills via standalone field...")
             await exec_skills_field(page, skill_field, skills)
+            # Ensure skills dropdown is fully closed before save
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(400)
+            await page.mouse.click(50, 50)
+            await page.wait_for_timeout(400)
         else:
             print(f"  [SKILLS] No standalone skills selectinput found on page")
     else:
@@ -2513,7 +2260,23 @@ async def handle_my_experience(page: Page):
                               if rf.get("tag") == "input"
                               and rf.get("label","").strip("* ").lower() in ("month","year","day")]
             all_entries = list(WE or []) + list(EDU or [])
-            # Assign each date field pair (Month+Year) to the appropriate entry by order
+            # Build expected date values for all entries
+            # WE entries have Month+Year pairs; EDU entries on Salesforce have Year-only (no Month)
+            we_date_vals = []   # (month_val, year_val) pairs for WE
+            edu_year_vals = []  # (start_year, end_year) pairs for EDU
+            for ent in all_entries:
+                stype = "work" if ent.get("company") else "edu"
+                sm = entry_answer({"label": "Month", "tag": "input", "date_seq": "start"}, ent, stype)
+                sy = entry_answer({"label": "Year",  "tag": "input", "date_seq": "start"}, ent, stype)
+                em = entry_answer({"label": "Month", "tag": "input", "date_seq": "end"},   ent, stype)
+                ey = entry_answer({"label": "Year",  "tag": "input", "date_seq": "end"},   ent, stype)
+                if stype == "work":
+                    if sm and sy: we_date_vals.append((sm, sy))
+                    if em and ey: we_date_vals.append((em, ey))
+                else:  # edu
+                    edu_year_vals.append((sy, ey))
+
+            # Process WE Month+Year pairs
             date_pairs = []
             i = 0
             while i < len(date_fields_rf):
@@ -2523,20 +2286,9 @@ async def handle_my_experience(page: Page):
                     i += 2
                 else:
                     i += 1
-            # Pair date pairs with entries (start+end dates per entry)
-            # Each WE entry has up to 2 date pairs; EDU similarly
-            entry_date_vals = []
-            for ent in all_entries:
-                stype = "work" if ent.get("company") else "edu"
-                sm = entry_answer({"label": "Month", "date_seq": "start"}, ent, stype)
-                sy = entry_answer({"label": "Year",  "date_seq": "start"}, ent, stype)
-                em = entry_answer({"label": "Month", "date_seq": "end"},   ent, stype)
-                ey = entry_answer({"label": "Year",  "date_seq": "end"},   ent, stype)
-                if sm and sy: entry_date_vals.append((sm, sy))
-                if em and ey: entry_date_vals.append((em, ey))
             for pair_i, (mf, yf) in enumerate(date_pairs):
-                if pair_i < len(entry_date_vals):
-                    mv, yv = entry_date_vals[pair_i]
+                if pair_i < len(we_date_vals):
+                    mv, yv = we_date_vals[pair_i]
                     mf["page_heading"] = "My Experience"
                     yf["page_heading"] = "My Experience"
                     await exec_text(page, mf, mv)
@@ -2544,21 +2296,81 @@ async def handle_my_experience(page: Page):
                     await exec_text(page, yf, yv)
                     await page.wait_for_timeout(200)
 
-            # ── Re-fill empty required button-dropdowns (e.g. Degree) ──
+            # Process EDU standalone Year fields (no Month counterpart — Salesforce has Year-only EDU)
+            edu_year_fields = [rf for rf in date_fields_rf
+                               if rf.get("label","").strip("* ").lower() == "year"
+                               and rf not in [yf for _, yf in date_pairs]]
+            for yf_i, yf in enumerate(edu_year_fields):
+                edu_ent_i = yf_i // 2  # 2 year fields per EDU entry (start + end)
+                year_within = yf_i % 2  # 0=start, 1=end
+                if edu_ent_i < len(edu_year_vals):
+                    sy_val, ey_val = edu_year_vals[edu_ent_i]
+                    yv = sy_val if year_within == 0 else ey_val
+                    if yv:
+                        yf["page_heading"] = "My Experience"
+                        print(f"  [RETRY] Re-filling EDU Year [{yf_i}] = {yv!r}")
+                        await exec_text(page, yf, yv)
+                        await page.wait_for_timeout(200)
+
+            # ── Re-fill EDU combobox fields (School, Field of Study) if EMPTY on retry ──
+            # Only re-fill if pill is absent — re-opening a filled combobox leaves the dropdown
+            # open and blocks Save and Continue.
+            all_comboboxes = [rf for rf in retry_fields
+                              if rf.get("isSelectInput")
+                              and rf.get("label","")]
+            edu_combobox_i = 0
+            for cb_f in all_comboboxes:
+                lbl_l = cb_f.get("label","").lower()
+                edu_ent_i = edu_combobox_i // 2  # ~2 comboboxes per EDU entry
+                ent = EDU[edu_ent_i] if edu_ent_i < len(EDU) else (EDU[-1] if EDU else None)
+                if not ent:
+                    continue
+                if label_match(lbl_l, "school","university","institution","college"):
+                    current_val = cb_f.get("value", "").strip()
+                    if current_val:
+                        print(f"  [RETRY] School combobox already has pill {current_val!r} — skipping")
+                        edu_combobox_i += 1
+                        continue
+                    search_val = entry_answer(dict(cb_f, tag="input"), ent, "edu")
+                    if search_val:
+                        print(f"  [RETRY] Re-filling School combobox = {search_val!r}")
+                        await exec_selectinput(page, cb_f, search_val)
+                        await page.keyboard.press("Escape")
+                        await page.wait_for_timeout(500)
+                    edu_combobox_i += 1
+                elif label_match(lbl_l, "major","field of study","discipline"):
+                    current_val = cb_f.get("value", "").strip()
+                    if current_val:
+                        print(f"  [RETRY] FoS combobox already has pill {current_val!r} — skipping")
+                        edu_combobox_i += 1
+                        continue
+                    search_val = entry_answer(dict(cb_f, tag="input"), ent, "edu")
+                    if search_val:
+                        print(f"  [RETRY] Re-filling FoS combobox = {search_val!r}")
+                        await exec_selectinput(page, cb_f, search_val)
+                        await page.keyboard.press("Escape")
+                        await page.mouse.click(50, 50)
+                        await page.wait_for_timeout(500)
+                    edu_combobox_i += 1
             # These can be reset when React re-renders after adding entries.
             empty_drops = [rf for rf in retry_fields
                            if rf.get("tag") == "button"
-                           and "select one" in rf.get("val","").lower()
+                           and "select one" in rf.get("value","").lower()
                            and rf.get("label","")]
-            for drop_f in empty_drops:
-                # Find an EDU entry whose degree matches this label context
-                for ent in (EDU or []):
-                    val = entry_answer(drop_f, ent, "edu")
-                    if val:
-                        print(f"  [RETRY] Re-filling empty dropdown '{drop_f['label']}' = {val!r}")
-                        await exec_button_dropdown(page, drop_f, val)
-                        await page.wait_for_timeout(500)
-                        break
+            degree_drops = [d for d in empty_drops
+                            if label_match(d.get("label","").lower(),
+                                           "degree","degree type","level of education")]
+            for drop_i, drop_f in enumerate(degree_drops):
+                ent = EDU[drop_i] if drop_i < len(EDU) else (EDU[-1] if EDU else None)
+                if not ent:
+                    continue
+                # Use degree_type first (e.g. "Master's Degree" → fuzzy matches "Masters"),
+                # fall back to abbreviation only if type is empty.
+                search_val = ent.get("degree_type","") or ent.get("degree_abbreviation","")
+                if search_val:
+                    print(f"  [RETRY] Re-filling Degree dropdown [{drop_i}] = {search_val!r}")
+                    await exec_button_dropdown(page, drop_f, search_val)
+                    await page.wait_for_timeout(500)
 
             await page.wait_for_timeout(1000)
     if not saved:
@@ -2672,7 +2484,7 @@ async def handle_voluntary_disclosures(page: Page) -> bool:
 
 async def handle_self_identify(page: Page) -> bool:
     print("\n[PAGE] Self Identify")
-    today = datetime.today()
+    today = datetime.datetime.today()
 
     # Fill name if the specific Workday Self-ID field exists
     name_el = page.locator("#selfIdentifiedDisabilityData--name").first
@@ -2717,32 +2529,102 @@ async def handle_self_identify(page: Page) -> bool:
             ok = True
     return ok
 
+# ── Run report (written to artifacts/run_report.json after each run) ──────────
+# Used by the fill-and-heal loop: Claude reads this + screenshots to diagnose failures.
+
+RUN_REPORT: dict = {
+    "job_url": "",
+    "started": "",
+    "final": "unknown",   # "complete" | "review" | "blocked" | "error"
+    "pages": [],
+}
+
+def _report_page(n: int, name: str, status: str,
+                 errors: list = None, req_labels: list = None,
+                 screenshot: str = "", fields_filled: int = 0, fields_skipped: list = None):
+    """Append a page entry to RUN_REPORT. Call once per page after attempting save."""
+    RUN_REPORT["pages"].append({
+        "n": n,
+        "name": name,
+        "status": status,           # "advanced" | "stuck" | "filled" | "skipped"
+        "errors": errors or [],
+        "required_invalid": req_labels or [],
+        "screenshot": screenshot,
+        "fields_filled": fields_filled,
+        "fields_skipped": fields_skipped or [],
+    })
+
+def _write_report():
+    """Write RUN_REPORT to artifacts/run_report.json."""
+    write_json_report(ARTIFACTS / "run_report.json", RUN_REPORT)
+
 # ── Main ──────────────────────────────────────────────────────────────────────
+
+async def _scrape_listing_locations(page: Page, job_url: str) -> list[str]:
+    """Return the full list of job locations from the listing page.
+
+    Tries the CXS JSON endpoint first (clean, structured). Falls back to DOM
+    text parsing if CXS fails (bot-blocked, unexpected shape, network error).
+    Returns a list like ['California - San Francisco', 'Washington - Seattle'].
+    """
+    # ── CXS JSON (preferred) ──────────────────────────────────────────────────
+    m = re.match(r'https://([^.]+)\.(wd\d+)\.myworkdayjobs\.com/([^/]+)/job/(.+)', job_url)
+    if m:
+        tenant, wdn, site, ext_path = m.groups()
+        cxs_url = f"https://{tenant}.{wdn}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/job/{ext_path}"
+        try:
+            resp = await page.request.get(cxs_url, timeout=10000)
+            data = await resp.json()
+            jpi = data.get("jobPostingInfo", {})
+            locs = []
+            if jpi.get("location"):
+                locs.append(jpi["location"])
+            locs.extend(jpi.get("additionalLocations", []))
+            remote_type = jpi.get("remoteType", "")
+            if locs:
+                print(f"[NAV] Listing locations (CXS): {locs}  remoteType={remote_type!r}")
+                return locs
+        except Exception as e:
+            print(f"[NAV] CXS location fetch failed ({e}) — falling back to DOM scrape")
+
+    # ── DOM text fallback ─────────────────────────────────────────────────────
+    # The listing page renders a "locations" label followed by individual city
+    # lines, ending with "View All N Locations" or "time type".
+    text = await page.evaluate("() => document.body.innerText")
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    locs = []
+    in_locs = False
+    for line in lines:
+        if line.lower() == "locations":
+            in_locs = True
+            continue
+        if in_locs:
+            if re.match(r'view all \d+ location', line, re.IGNORECASE):
+                continue  # skip "View All 6 Locations" banner
+            if line.lower() in ("time type", "remote type", "posted on", "job requisition id",
+                                "full time", "part time"):
+                break  # reached next metadata section
+            if re.match(r'.+ - .+', line) or re.match(r'[A-Z][a-z]+ - [A-Z]', line):
+                locs.append(line)
+            elif locs:
+                break  # location block ended
+    if locs:
+        print(f"[NAV] Listing locations (DOM): {locs}")
+    return locs
+
 
 async def _scrape_listing_salary(page: Page) -> str | None:
     """Extract the salary/compensation range from the job listing page text.
     Returns a target integer (midpoint) as string, or None if not found."""
     text = await page.evaluate("() => document.body.innerText")
-    # Match patterns like "$68,000.00 - $102,000.00" or "$75,000 - $110,000"
-    m = re.search(r'\$([\d,]+(?:\.\d+)?)\s*[-–—]\s*\$([\d,]+(?:\.\d+)?)', text)
-    if m:
-        lo = int(float(m.group(1).replace(",","")))
-        hi = int(float(m.group(2).replace(",","")))
-        midpoint = (lo + hi) // 2
-        print(f"[NAV] Listing salary: ${lo:,} - ${hi:,} → midpoint ${midpoint:,}")
-        return str(midpoint)
-    # Also try "75000 to 110000" patterns
-    m = re.search(r'([\d,]+)\s*(?:to)\s*([\d,]+)\s*(?:per year|annually|/yr)', text, re.IGNORECASE)
-    if m:
-        lo = int(m.group(1).replace(",",""))
-        hi = int(m.group(2).replace(",",""))
-        midpoint = (lo + hi) // 2
-        return str(midpoint)
-    return None
+    result = scrape_salary(text)
+    if result:
+        print(f"[NAV] Listing salary midpoint: ${result}")
+    return result
 
 async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
     mode = "DeepSeek" if DEEPSEEK_KEY else "rule-based fallback"
-    key_hint = f"sk-...{DEEPSEEK_KEY[-4:]}" if DEEPSEEK_KEY else "NOT SET (add DEEPSEEK_API_KEY to agent_test/.env)"
+    key_hint = f"sk-...{DEEPSEEK_KEY[-4:]}" if DEEPSEEK_KEY else "NOT SET (add DEEPSEEK_API_KEY to data/.env)"
     print(f"[BOT] Workday Application Bot")
     print(f"[BOT] Fill mode  : {mode}")
     print(f"[BOT] DeepSeek   : {key_hint}")
@@ -2751,19 +2633,17 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
     print(f"[BOT] Job        : {job_url}")
     print(f"[BOT] Display    : {'headed (visible)' if headed else 'headless (background)'}\n")
 
+    # Initialize run report
+    RUN_REPORT["job_url"] = job_url
+    RUN_REPORT["started"] = datetime.datetime.now().isoformat()
+    RUN_REPORT["final"] = "unknown"
+    RUN_REPORT["pages"] = []
+
     async with async_playwright() as pw:
-        launch_kwargs = dict(
-            headless=not headed,
-            args=["--disable-blink-features=AutomationControlled","--no-first-run",
-                  "--disable-web-security","--no-sandbox"])
-        if CHROME_PATH:
-            launch_kwargs["executable_path"] = CHROME_PATH
-        browser = await pw.chromium.launch(**launch_kwargs)
-        ctx = await browser.new_context(
-            viewport={"width":1280,"height":900},
-            user_agent=USER_AGENT)
-        await ctx.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
-        page = await ctx.new_page()
+        browser, ctx, page = await launch_browser(pw, headed, extra_args=[
+            "--no-first-run", "--disable-web-security",
+            "--disable-blink-features=AutomationControlled",
+        ])
 
         print("[NAV] Loading job listing...")
         try:
@@ -2774,19 +2654,20 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
             raise
         await page.wait_for_timeout(3000)
 
-        # Scrape salary range from the listing page and inject into PROFILE_SUMMARY
-        # so DeepSeek can pick the right compensation range option in Application Questions
+        # Scrape salary + locations from the listing page; inject into PROFILE_SUMMARY
         listing_salary = await _scrape_listing_salary(page)
         if listing_salary:
             print(f"[NAV] Using listing salary midpoint: ${int(listing_salary):,}")
         else:
             listing_salary = str(LIBRARY.get("compensation_rules", {}).get("baseline_target_pay", "140000"))
             print(f"[NAV] No salary range found in listing — using baseline: {listing_salary}")
-        # Update the global PROFILE_SUMMARY with the extracted salary midpoint
-        import sys as _sys
-        _mod = _sys.modules[__name__]
+        listing_locations = await _scrape_listing_locations(page, job_url)
+        # Update PROFILE_SUMMARY with salary, locations, and today's date
+        _mod = sys.modules[__name__]
         _profile_data = json.loads(_mod.PROFILE_SUMMARY)
         _profile_data["job_listing_salary"] = int(listing_salary)
+        _profile_data["job_listing_locations"] = listing_locations
+        _profile_data["today"] = datetime.date.today().isoformat()
         _mod.PROFILE_SUMMARY = json.dumps(_profile_data, indent=2)
 
         # No proactive sign-in on listing page — navigate directly to /apply URL.
@@ -2882,11 +2763,17 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
             print(f"\n{'='*60}\n[PAGE {page_num}] {heading}\n{'='*60}")
 
             if "My Tasks" in (heading or ""):
-                print("[BOT] ✓ Application complete."); break
+                print("[BOT] ✓ Application complete.")
+                RUN_REPORT["final"] = "complete"
+                _report_page(page_num, heading or "My Tasks", "complete")
+                break
             if not heading:
                 # Still blank after waiting — take screenshot and break to avoid loop
-                await page.screenshot(path=str(ARTIFACTS / f"blank_heading_p{page_num}.png"))
+                blank_ss = str(ARTIFACTS / f"blank_heading_p{page_num}.png")
+                await page.screenshot(path=blank_ss)
                 print(f"  [NAV] Blank heading after 8s — screenshot saved, stopping")
+                RUN_REPORT["final"] = "blocked"
+                _report_page(page_num, "(blank)", "stuck", errors=["blank heading after 8s"], screenshot=blank_ss)
                 break
 
             # Sign-in page inside the application form — use ensure_signed_in
@@ -2903,7 +2790,8 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
                 await page.wait_for_timeout(4000)
                 continue
 
-            ss = ARTIFACTS / f"run_{page_num:02d}_{re.sub(r'[^a-zA-Z0-9]','_',heading)[:30]}.png"
+            ss_name = f"run_{page_num:02d}_{re.sub(r'[^a-zA-Z0-9]','_',heading)[:30]}.png"
+            ss = ARTIFACTS / ss_name
             await page.screenshot(path=str(ss))
 
             # ── Detect page type by CONTENT, not heading text ──────────────────
@@ -2925,7 +2813,10 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
 
             try:
                 if is_complete:
-                    print("[BOT] ✓ Application complete."); break
+                    print("[BOT] ✓ Application complete.")
+                    RUN_REPORT["final"] = "complete"
+                    _report_page(page_num, heading, "complete", screenshot=ss_name)
+                    break
 
                 elif is_review:
                     print("\n" + "="*60)
@@ -2951,19 +2842,20 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
                     await page.screenshot(path=review_shot, full_page=True)
                     await page.set_viewport_size(orig_vp)
                     print(f"  Screenshot saved: {review_shot}")
+                    RUN_REPORT["final"] = "review"
+                    _report_page(page_num, heading, "review", screenshot="review_page.png")
                     try:
                         await asyncio.to_thread(input, "  → Press [Enter] to submit, Ctrl+C to abort: ")
                         await save_and_continue(page)
                         print("  ✓ Submitted!")
+                        RUN_REPORT["final"] = "complete"
                     except (EOFError, KeyboardInterrupt):
                         print(f"  ⚠️  Non-interactive mode — NOT submitting. Review at {review_shot}")
                         if headed:
-                            # Keep browser open so user can inspect the review page
-                            print("  → Browser staying open. Press Ctrl+C to close.")
-                            try:
-                                await asyncio.to_thread(input, "  → Press [Enter] to close browser: ")
-                            except (EOFError, KeyboardInterrupt):
-                                pass
+                            # Keep browser open so user can inspect the review page.
+                            # stdin is /dev/null in async bash — use a timed wait instead of input().
+                            print("  → Browser staying open for 10 minutes. Kill this process when done.")
+                            await page.wait_for_timeout(600_000)  # 10 minutes
                     break
 
                 elif has_add_buttons:
@@ -2971,9 +2863,15 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
                     print(f"  → Detected as experience/education page (add-buttons present)")
                     ok = await handle_my_experience(page)
                     if not ok:
+                        blocked_ss = str(ARTIFACTS / f"blocked_my_experience.png")
                         print(f"  [NAV] My Experience save failed — taking screenshot and stopping")
-                        await page.screenshot(path=str(ARTIFACTS / f"blocked_my_experience.png"))
+                        await page.screenshot(path=blocked_ss)
+                        RUN_REPORT["final"] = "blocked"
+                        _report_page(page_num, heading, "stuck",
+                                     errors=["My Experience save failed after 3 attempts"],
+                                     screenshot=f"blocked_my_experience.png")
                         break
+                    _report_page(page_num, heading, "advanced", screenshot=ss_name)
 
                 elif has_tc_checkbox:
                     # Voluntary Disclosures / T&C page — any tenant name
@@ -2983,6 +2881,7 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
                         current = await get_heading(page)
                         if current and current == "Voluntary Disclosures":
                             print(f"  [NAV] Voluntary Disclosures save may have failed — continuing anyway")
+                    _report_page(page_num, heading, "advanced" if ok else "filled", screenshot=ss_name)
 
                 elif has_self_id:
                     # Self Identification / EEO page — any tenant name
@@ -2992,6 +2891,7 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
                         current = await get_heading(page)
                         if current and current == "Self Identify":
                             print(f"  [NAV] Self Identify save may have failed — continuing anyway")
+                    _report_page(page_num, heading, "advanced" if ok else "filled", screenshot=ss_name)
 
                 else:
                     # Generic page (My Information, Application Questions, custom pages)
@@ -3009,22 +2909,32 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
                             break
                         print(f"  [NAV] 0 fillable fields found — waiting for page to load (attempt {_wait_attempt+1}/5)...")
                         await page.wait_for_timeout(3000)
-                    ok = await save_and_continue(page)
+                    ok, _errs, _reqs = await save_and_continue_with_report(page)
                     if not ok:
                         # Validation revealed hidden fields (e.g. RH radio on My Information)
                         print("  [NAV] Re-scanning for newly visible fields after validation...")
                         await smart_fill_page(page, heading)
-                        ok = await save_and_continue(page)
+                        ok, _errs, _reqs = await save_and_continue_with_report(page)
                     if not ok:
+                        blocked_ss = f"blocked_{page_num:02d}.png"
                         print("  [NAV] Still blocked — taking screenshot and breaking")
-                        await page.screenshot(path=str(ARTIFACTS / f"blocked_{page_num:02d}.png"))
+                        await page.screenshot(path=str(ARTIFACTS / blocked_ss))
+                        RUN_REPORT["final"] = "blocked"
+                        _report_page(page_num, heading, "stuck", errors=_errs,
+                                     req_labels=_reqs, screenshot=blocked_ss)
                         break
+                    _report_page(page_num, heading, "advanced", errors=_errs,
+                                 req_labels=_reqs, screenshot=ss_name)
 
             except Exception as e:
                 print(f"  [ERR] {e}")
-                await page.screenshot(path=str(ARTIFACTS / f"error_p{page_num}.png"))
+                err_ss = f"error_p{page_num}.png"
+                await page.screenshot(path=str(ARTIFACTS / err_ss))
+                RUN_REPORT["final"] = "error"
+                _report_page(page_num, heading, "error", errors=[str(e)], screenshot=err_ss)
                 break
 
+        _write_report()
         print("\n[BOT] Done.")
         await browser.close()
 
@@ -3045,6 +2955,31 @@ if __name__ == "__main__":
         # — but with rule-based answers (no network calls).
         async def _sim_deepseek_fill(fields, entry=None, section_type=None, **kw):
             print(f"  [SIM-DS] Simulating DeepSeek for {len(fields)} fields (rule-based answers)")
+            # ── Print the exact payload DeepSeek would receive ──────────────────
+            _field_lines = []
+            for _f in fields:
+                _line = f"[{_f['index']}] type={_f['type']} label={_f['label']!r}"
+                if _f.get("date_seq"): _line += f" date_seq={_f['date_seq']}"
+                if _f.get("options"):  _line += f" options={_f['options']}"
+                if _f.get("value"):    _line += f" current={_f['value']!r}"
+                if _f.get("section"): _line += f" section={_f['section']!r}"
+                _field_lines.append(_line)
+            _entry_ctx = ""
+            if entry and section_type:
+                _entry_ctx = (f"\nEntry Context (you are filling ONE {section_type} entry — "
+                              f"use ONLY this data for these fields):\n"
+                              f"{json.dumps(entry, indent=2)}\n")
+            _user_prompt = (f"Candidate Profile:\n{PROFILE_SUMMARY}\n"
+                            f"{_entry_ctx}"
+                            f"\nForm Fields (page: {fields[0].get('page_heading','') if fields else ''}):\n"
+                            + "\n".join(_field_lines))
+            print("  [SIM-DS] ══════════ DEEPSEEK SYSTEM PROMPT ══════════")
+            for _ln in SYSTEM_PROMPT.splitlines():
+                print(f"  [SIM-DS] {_ln}")
+            print("  [SIM-DS] ══════════ DEEPSEEK USER PROMPT ══════════")
+            for _ln in _user_prompt.splitlines():
+                print(f"  [SIM-DS] {_ln}")
+            print("  [SIM-DS] ══════════ END PROMPT ══════════")
             if entry and section_type:
                 # Use entry-specific answers (same as the real DeepSeek path)
                 answers = []
@@ -3059,12 +2994,11 @@ if __name__ == "__main__":
 
         async def _sim_deepseek_pick_skill(search_term, options, already_selected):
             """Rule-based pick — same logic as exec_skills_field's inline rule_score."""
-            import re as _re
             def rule_score(opt):
                 o = opt.lower(); sl = search_term.lower()
                 if o == sl: return 0
                 if o.startswith(sl + " "): return 1
-                if _re.search(r'\b' + _re.escape(sl) + r'\b', o): return 2
+                if re.search(r'\b' + re.escape(sl) + r'\b', o): return 2
                 if o.startswith(sl): return 3
                 return 99
             filtered = [o for o in options if o.lower() not in already_selected]
@@ -3073,8 +3007,7 @@ if __name__ == "__main__":
             best = min(filtered, key=rule_score)
             return best if rule_score(best) < 99 else None
 
-        import sys as _sys
-        _mod = _sys.modules[__name__]
+        _mod = sys.modules[__name__]
         _mod.deepseek_fill_page = _sim_deepseek_fill
         _mod.deepseek_pick_skill = _sim_deepseek_pick_skill
         _mod.DEEPSEEK_KEY = "sim"

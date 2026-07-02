@@ -1,0 +1,8 @@
+playwright==1.60.0
+python-dotenv==1.2.2
+httpx==0.28.1
+requests==2.34.2
+beautifulsoup4==4.15.0
+
+# NOTE: After install, run:  playwright install chromium
+# (optional if system Chrome is available — bot uses it automatically via _find_chrome())
