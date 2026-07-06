@@ -79,11 +79,6 @@ ARTIFACTS.mkdir(exist_ok=True)
 async def rule_based_fill_page(fields: list[dict], context_hint: str = "") -> list[dict]:
     return rule_based_fill_fields(fields, context_hint)
 
-DEFAULT_JOB_URL = (
-    "https://truist.wd1.myworkdayjobs.com/en-US/Careers/job/Raleigh-NC/"
-    "Java-Software-Engineer-I---Full-Stack----Financial-Crimes_R0115229"
-)
-
 
 # ── Workday-specific: skills pill picker via DeepSeek ────────────────────────
 
@@ -151,6 +146,26 @@ SCAN_JS = r"""(rootSel) => {
                 return t ? t.innerText.trim() : '';
             }).filter(t => t && !/^select one/i.test(t) && !/^[0-9a-f]{20,}$/i.test(t));
             if (parts.length) return parts.join(' ').replace(/\*$/, '').trim();
+        }
+        // 1b) For button dropdowns: try formField question label FIRST so that a pre-filled
+        //     Workday dropdown (aria-label = selected value, not the question) gets the real label.
+        if (el.tagName === 'BUTTON') {
+            const fw2 = el.closest('[data-automation-id^="formField"]') ||
+                        el.closest('[data-uxi-widget-type="formField"]');
+            if (fw2) {
+                for (const sel of [
+                    '[data-automation-id="questionText"] p',
+                    '[data-automation-id="questionText"]',
+                    '[data-automation-id="formLabel"]',
+                    'label', 'legend'
+                ]) {
+                    const l = fw2.querySelector(sel);
+                    if (l) {
+                        const lt = l.innerText.trim().replace(/\*$/, '').trim();
+                        if (lt && !/^[0-9a-f]{20,}$/i.test(lt) && !/^select one/i.test(lt)) return lt;
+                    }
+                }
+            }
         }
         // 2) aria-label (skip generic placeholders and UUIDs, but strip leading whitespace)
         let t = (el.getAttribute('aria-label')||'').trim();
@@ -364,9 +379,10 @@ SCAN_JS = r"""(rootSel) => {
         else value = (el.value||'').trim();
 
         el.setAttribute('data-fill-idx', idx);
+        const ml = parseInt(el.getAttribute('maxlength')) || 0;
         results.push({index:idx++, tag, type, id:el.id||'', auto,
             label, section:getSection(el), options, value,
-            isSelectInput: inSelectInput});
+            maxlength: ml, isSelectInput: inSelectInput});
     });
     return results;
 }"""
@@ -559,9 +575,51 @@ async def exec_selectinput(page: Page, field: dict, value: str):
         print(f"    ~ sel   [{idx}] {field['label']!r} — empty value")
         return
 
-    # Locate input
+    # row_scope: a CSS selector stamped on this entry's EDU row container by fill_add_dialog.
+    # When present, we locate the selectinput within that row so an intervening SCAN_JS re-stamp
+    # can never redirect a [data-fill-idx=N] lookup onto a different entry's field.
+    row_scope = field.get("row_scope", "")
+
+    # Locate input — prefer stable id, then row-scoped label query, then page-global data-fill-idx.
+    faid = field.get("auto", "")   # data-automation-id of the input (may be empty)
+    field_label_lower = field.get("label", "").lower().rstrip("* ")
+
     if fid:
         inp = page.locator(f"input#{fid}").first
+    elif row_scope:
+        # Scope to the entry's row so we never accidentally target another entry's input.
+        # evaluate_handle returns an ElementHandle scoped to the correct row, not page-global.
+        # Strategy: find formField whose label matches, then its combobox input.
+        inp_handle = await page.evaluate_handle("""(args) => {
+            const row = document.querySelector(args.rowScope);
+            if (!row) return null;
+            // If data-automation-id known, use it directly
+            if (args.faid) {
+                const el = row.querySelector('[data-automation-id="' + args.faid + '"]');
+                if (el && (el.tagName === 'INPUT' || el.getAttribute('role') === 'combobox')) return el;
+            }
+            // Find the formField whose label text contains the field's label keywords
+            const ffs = Array.from(row.querySelectorAll('[data-automation-id^="formField"]'));
+            for (const ff of ffs) {
+                const lbl = (ff.querySelector('[data-automation-id="formLabel"],label,legend')
+                             ?.innerText || '').toLowerCase();
+                if (args.labelHint && lbl.includes(args.labelHint)) {
+                    const inp = ff.querySelector('input[role="combobox"],[data-uxi-widget-type="selectinput"] input,input:not([type=hidden])');
+                    if (inp) return inp;
+                }
+            }
+            // Fallback: first combobox in the row that isn't already filled (no pill)
+            const combos = Array.from(row.querySelectorAll('input[role="combobox"],[data-uxi-widget-type="selectinput"] input,input:not([type=hidden])'));
+            for (const c of combos) {
+                const fw = c.closest('[data-automation-id^="formField"]') || c.parentElement;
+                if (!fw?.querySelector('[data-automation-id="selectedItem"]')) return c;
+            }
+            return combos[0] || null;
+        }""", {"rowScope": row_scope, "faid": faid, "labelHint": field_label_lower})
+        # as_element() returns the underlying ElementHandle (or None if JS returned null)
+        inp = inp_handle.as_element() if inp_handle else None
+        if inp is None:
+            inp = page.locator(f"[data-fill-idx='{idx}']").first
     else:
         inp = page.locator(f"[data-fill-idx='{idx}']").first
 
@@ -569,11 +627,74 @@ async def exec_selectinput(page: Page, field: dict, value: str):
         await inp.scroll_into_view_if_needed(timeout=5000)
         await inp.click(force=True, timeout=5000)
     except Exception:
-        await page.evaluate("(idx) => { "
-            "const el = document.querySelector('[data-fill-idx=\"' + idx + '\"]'); "
-            "if (el) { el.scrollIntoView({block:'center'}); el.click(); } "
-            "}", idx)
+        if row_scope:
+            await page.evaluate("""(args) => {
+                const row = document.querySelector(args.rowScope);
+                const el = row?.querySelector('input[role="combobox"]') || row?.querySelector('input');
+                if (el) { el.scrollIntoView({block:'center'}); el.click(); }
+            }""", {"rowScope": row_scope})
+        else:
+            await page.evaluate("(idx) => { "
+                "const el = document.querySelector('[data-fill-idx=\"' + idx + '\"]'); "
+                "if (el) { el.scrollIntoView({block:'center'}); el.click(); } "
+                "}", idx)
     await page.wait_for_timeout(400)
+
+    # JS to read the pill value from the SPECIFIC formField for this field.
+    # When row_scope is set, find the formField matching the label hint within the row
+    # so we don't accidentally read the already-filled School pill from the same row.
+    _PILL_JS_SCOPED = """(args) => {
+        let fw;
+        if (args.rowScope) {
+            const row = document.querySelector(args.rowScope);
+            if (!row) return null;
+            // Find the specific formField whose label matches this field (e.g. "field of study")
+            const ffs = Array.from(row.querySelectorAll('[data-automation-id^="formField"]'));
+            if (args.labelHint) {
+                for (const ff of ffs) {
+                    const lbl = (ff.querySelector('[data-automation-id="formLabel"],label,legend')
+                                 ?.innerText || '').toLowerCase();
+                    if (lbl.includes(args.labelHint)) { fw = ff; break; }
+                }
+            }
+            // Fallback: look for a formField whose input is the one we just typed into
+            // (it should be the focused/active element)
+            if (!fw) {
+                const active = document.activeElement;
+                if (active && row.contains(active)) {
+                    fw = active.closest('[data-automation-id^="formField"]') || active.parentElement;
+                }
+            }
+            if (!fw) fw = row;  // last resort: whole row
+        } else if (args.fid) {
+            const el = document.getElementById(args.fid);
+            fw = el?.closest('[data-automation-id^="formField"]') || el?.parentElement;
+        } else {
+            const el = document.querySelector('[data-fill-idx="' + args.idx + '"]');
+            fw = el?.closest('[data-automation-id^="formField"]') || el?.parentElement;
+        }
+        const pill = fw?.querySelector('[data-automation-id="selectedItem"]');
+        if (pill && pill.getBoundingClientRect().height > 0) return pill.innerText.trim();
+        return null;
+    }"""
+
+    def _norm_tokens(s: str) -> set:
+        """Normalize string to a set of lowercase alphanum tokens (strips punctuation/hyphens)."""
+        return set(re.sub(r'[^a-z0-9 ]', ' ', s.lower()).split())
+
+    def _pill_matches_any_term(pill_text: str, all_terms: list) -> bool:
+        """Return True if pill_text token-overlaps ANY term by >50% of the term's tokens.
+        Used to detect Workday auto-filled pills whose text doesn't exactly match the search
+        term (e.g. pill='Computer and Information Science', term='Computer Science')."""
+        pill_tok = _norm_tokens(pill_text)
+        for t in all_terms:
+            tok = _norm_tokens(t)
+            if not tok:
+                continue
+            overlap = len(pill_tok & tok)
+            if overlap >= max(1, len(tok) // 2):
+                return True
+        return False
 
     for term_idx, term in enumerate(terms):
         # Clear any existing text and type the search term
@@ -581,44 +702,65 @@ async def exec_selectinput(page: Page, field: dict, value: str):
         await inp.type(term, delay=70)
         await page.wait_for_timeout(SETTLE_MS)
 
-        # Press Enter to trigger Workday's server-side search filter
+        # Press Enter to trigger Workday's server-side search / auto-fill
         await inp.press("Enter")
-        await page.wait_for_timeout(1200)  # wait for search results
 
-        # Read only VISIBLE options (height > 0) — critical for Workday virtual scroll:
-        # filtered results show height > 0; non-matching hidden items have height = 0
-        results = await page.evaluate("""() => {
-            const getVisible = (c) => Array.from(c.querySelectorAll('[role="option"]'))
-                .filter(e => e.getBoundingClientRect().height > 0)
-                .map(e => e.innerText.trim()).filter(Boolean);
-            const c1 = Array.from(document.querySelectorAll('[data-automation-id="activeListContainer"]'))
-                .find(x => x.getBoundingClientRect().height > 0);
-            if (c1) { const o = getVisible(c1); if (o.length) return o; }
-            const poppers = Array.from(document.querySelectorAll('[data-popper-placement]'))
-                .filter(x => x.getBoundingClientRect().height > 0);
-            for (const p of poppers) { const o = getVisible(p); if (o.length) return o; }
-            return [];
-        }""")
+        # --- Poll for pill OR visible results (mirrors the skills-path poll loop) ---
+        # A single fixed wait misses Workday's async autofill when it lands late.
+        # Exit as soon as we see a matching pill OR any option results appear.
+        pill = None
+        results = []
+        for _wait in (600, 500, 500, 400, 400):   # up to ~2.4s total, exits early
+            await page.wait_for_timeout(_wait)
+            # Check pill first — auto-filled comboboxes set this before the dropdown settles
+            pill = await page.evaluate(_PILL_JS_SCOPED,
+                                       {"fid": fid, "idx": idx, "rowScope": row_scope,
+                                        "labelHint": field_label_lower})
+            if pill and fuzzy_pick([pill], term):
+                break  # confirmed auto-fill via strict match — stop polling immediately
+            # Check visible dropdown options
+            results = await page.evaluate("""() => {
+                const getVisible = (c) => Array.from(c.querySelectorAll('[role="option"]'))
+                    .filter(e => e.getBoundingClientRect().height > 0)
+                    .map(e => e.innerText.trim()).filter(Boolean);
+                const c1 = Array.from(document.querySelectorAll('[data-automation-id="activeListContainer"]'))
+                    .find(x => x.getBoundingClientRect().height > 0);
+                if (c1) { const o = getVisible(c1); if (o.length) return o; }
+                const poppers = Array.from(document.querySelectorAll('[data-popper-placement]'))
+                    .filter(x => x.getBoundingClientRect().height > 0);
+                for (const p of poppers) { const o = getVisible(p); if (o.length) return o; }
+                return [];
+            }""")
+            if results:
+                # Dropdown appeared — but the pill may arrive shortly after.
+                # Give it one extra read before deciding (Workday sometimes renders
+                # the generic list 200-300ms before committing the autofill pill).
+                await page.wait_for_timeout(400)
+                pill = await page.evaluate(_PILL_JS_SCOPED,
+                                           {"fid": fid, "idx": idx, "rowScope": row_scope,
+                                            "labelHint": field_label_lower})
+                break
+
+        # --- 1. Accept auto-filled pill ---
+        # Check pill BEFORE evaluating the dropdown/unfiltered-list guard.
+        # A Workday `selectedItem` pill is authoritative: Workday only sets it when it has
+        # committed a real value. The generic dropdown (Accounting, Actuarial Science, …) can
+        # appear SIMULTANEOUSLY with a correct pill, so we must check the pill first.
+        # Use token-overlap against ALL terms (not just the current one) so that
+        # "Computer and Information Science" is accepted on the first search term "Computer Science"
+        # (tokens {computer, science} overlap ≥ 50% threshold → match).
+        if pill and (fuzzy_pick([pill], term) or _pill_matches_any_term(pill, terms)):
+            await inp.press("Tab")
+            await page.wait_for_timeout(1200)
+            print(f"    ✓ sel   [{idx}] {field['label']!r} = {pill!r} (auto-filled pill)")
+            return
 
         print(f"    [sel] search={term!r} results ({len(results)}): {results[:5]}")
 
         if not results:
-            # Maybe auto-filled as single pill (Workday collapses single-match to pill)
-            pill = await page.evaluate("(args) => { "
-                "const el = args.fid ? document.getElementById(args.fid) "
-                "           : document.querySelector('[data-fill-idx=\"' + args.idx + '\"]'); "
-                "const fw = el?.closest('[data-automation-id^=\"formField\"]') || el?.parentElement; "
-                "const pill = fw?.querySelector('[data-automation-id=\"selectedItem\"]'); "
-                "if (pill && pill.getBoundingClientRect().height > 0) return pill.innerText.trim(); "
-                "return null; "
-                "}", {"fid": fid, "idx": idx})
+            # No dropdown visible and no matching pill.
             if pill:
-                # Tab to trigger blur/onChange and commit the selected value to React state.
-                # Use a longer wait to allow AJAX auto-save to complete (especially in headed mode).
-                await inp.press("Tab")
-                await page.wait_for_timeout(1200)
-                print(f"    ✓ sel   [{idx}] {field['label']!r} = {pill!r} (auto-filled single result)")
-                return
+                print(f"    ~ sel   stale/unmatched pill {pill!r} — not accepting, trying next term")
             # Try next fallback term
             if term_idx < len(terms) - 1:
                 print(f"    ~ sel   no results for {term!r}, trying fallback {terms[term_idx+1]!r}...")
@@ -630,16 +772,21 @@ async def exec_selectinput(page: Page, field: dict, value: str):
             return
 
         # If results look unfiltered (first result doesn't contain any word from search term),
-        # Workday returned all options (no match for this term) — try next fallback term
+        # Workday returned all options (no match for this term) — try next fallback term.
+        # Never blindly pick results[0] — that accepts "Accounting" for "Computer Science".
         term_words = set(term.lower().split())
         first_l = results[0].lower()
-        if not any(w in first_l for w in term_words) and term_idx < len(terms) - 1:
-            print(f"    ~ sel   results unfiltered for {term!r} (first: {results[0]!r}), trying fallback {terms[term_idx+1]!r}...")
+        if not any(w in first_l for w in term_words):
+            if term_idx < len(terms) - 1:
+                print(f"    ~ sel   results unfiltered for {term!r} (first: {results[0]!r}), trying fallback {terms[term_idx+1]!r}...")
+                await inp.press("Escape")
+                await page.wait_for_timeout(SETTLE_MS)
+                continue
+            # Last term exhausted with only unfiltered results — leave unset.
+            print(f"    ~ sel   [{idx}] {field['label']!r} — no term matched; leaving unset to avoid wrong pick")
             await inp.press("Escape")
-            await page.wait_for_timeout(SETTLE_MS)
-            continue
+            return
 
-        # Pick best match from filtered results
         match = fuzzy_pick(results, term) or results[0]
         match_text = match[:60]
         # Use Playwright locator click — React dropdowns ignore JS-injected MouseEvents
@@ -1041,11 +1188,18 @@ async def smart_fill_page(page: Page, heading: str, context_hint: str = "",
     _page_text_lower = (context_hint or heading or "").lower()
     # Also check visible labels on this page for graduation context
     _all_labels_lower = " ".join(f.get("label","") for f in fillable).lower()
+    # Also scan page body text (catches standalone question headings not in field labels).
+    try:
+        _body_text_lower = (await page.evaluate("() => document.body.innerText")).lower() if not page.is_closed() else ""
+    except Exception:
+        _body_text_lower = ""
     # Also detect via "school location" + date spinbuttons on same page (Salesforce App Q 2 pattern)
     _has_school_context = ("graduation" in _all_labels_lower or "graduation" in _page_text_lower
+                           or "graduation" in _body_text_lower
                            or ("school location" in _all_labels_lower and
                                any(f["label"].strip("* ").lower() in _date_labels for f in fillable))
-                           or "anticipated" in _all_labels_lower or "anticipated" in _page_text_lower)
+                           or "anticipated" in _all_labels_lower or "anticipated" in _page_text_lower
+                           or "anticipated" in _body_text_lower)
     if _has_school_context:
         _school = next((e for e in EDU if "attending" in e.get("current_status","").lower()), None)
         if _school:
@@ -1070,7 +1224,13 @@ async def smart_fill_page(page: Page, heading: str, context_hint: str = "",
         print(f"  [LLM] Got {len(answers)} answers")
     else:
         print(f"  [RULES] DeepSeek unavailable — using label-matching rules")
-        answers = await rule_based_fill_page(fillable, context_hint or heading)
+        # Enrich context_hint with graduation signal if page body text contains it,
+        # so rule_based_answer's `section` sees "anticipated graduation" and fires the
+        # graduation-date branch (not the generic today+2wk branch) for bare M/D/Y inputs.
+        _rule_ctx = context_hint or heading
+        if _has_school_context and "graduation" not in _rule_ctx.lower():
+            _rule_ctx = "anticipated graduation " + _rule_ctx
+        answers = await rule_based_fill_page(fillable, _rule_ctx)
 
     field_map = {f["index"]: f for f in fillable}
 
@@ -1353,7 +1513,10 @@ def entry_answer(field: dict, entry: dict, section_type: str) -> str | None:
             # Description check MUST come before title/role — "Role Description" contains "role"
             # and would incorrectly match the title rule if order were reversed
             if label_match(label, "description","responsibilities","summary","duties","role description"):
-                return entry.get("description","")[:500]
+                desc = entry.get("description","")
+                ml = field.get("maxlength") or 0
+                cap = ml if ml > 0 else 4000  # respect DOM limit; 4000 safe ceiling if absent
+                return desc[:cap]
             if label_match(label, "job title","title","position") or \
                (label_match(label, "role") and not label_match(label, "description")):
                 return entry.get("role","")
@@ -1464,7 +1627,7 @@ def entry_answer(field: dict, entry: dict, section_type: str) -> str | None:
 # Note: LANG has no anchor_kws — it uses field-diff instead (new fields only).
 SECTION_SPEC = {
     "work": {
-        "anchor_kws": ("job title", "company", "employer", "position"),
+        "anchor_kws": ("job title",),
         "stop_kws": ("school or university", "school", "university", "degree",
                      "type to add skills", "language", "website"),
     },
@@ -1511,6 +1674,51 @@ async def fill_add_dialog(page: Page, dialog_label: str, entry: dict = None, sec
                 fields = all_fields[last_start: stop_pos]
             else:
                 fields = all_fields[last_start:]
+
+            # For EDU: stamp the entry's row container with a unique scope marker so
+            # exec_selectinput can locate selectinput inputs WITHIN this entry's row rather
+            # than relying on the page-global data-fill-idx (which is re-stamped on every
+            # SCAN_JS call and can point to the wrong row after a DOM re-render).
+            if section_type == "edu" and fields:
+                anchor_field = fields[0]   # the School anchor field for this entry
+                anchor_idx = anchor_field["index"]
+                scope_attr = f"data-entry-scope"
+                scope_val  = f"edu-{anchor_idx}"
+                scope_sel  = f"[{scope_attr}='{scope_val}']"
+                # Stamp the scope on the row's common ancestor container.
+                # Walk up from the anchor input to find the education-row container:
+                # Workday wraps each inline EDU row in a div that contains the school formField.
+                stamped = await page.evaluate("""(args) => {
+                    const el = document.querySelector('[data-fill-idx="' + args.anchorIdx + '"]');
+                    if (!el) return false;
+                    // Walk up to find a container that holds multiple formField descendants
+                    // (the education row) but stop before the entire section.
+                    let node = el.closest('[data-automation-id^="formField"]') || el;
+                    for (let i = 0; i < 6; i++) {
+                        node = node.parentElement;
+                        if (!node) break;
+                        // Stop at the section-level or body — the row container is the one
+                        // that has at least 2 formField children (school + degree + FoS).
+                        const ffs = node.querySelectorAll('[data-automation-id^="formField"]');
+                        if (ffs.length >= 2) {
+                            node.setAttribute(args.scopeAttr, args.scopeVal);
+                            return true;
+                        }
+                    }
+                    // Fallback: stamp directly on anchor's formField parent
+                    const ff = el.closest('[data-automation-id^="formField"]');
+                    if (ff && ff.parentElement) {
+                        ff.parentElement.setAttribute(args.scopeAttr, args.scopeVal);
+                        return true;
+                    }
+                    return false;
+                }""", {"anchorIdx": anchor_idx, "scopeAttr": scope_attr, "scopeVal": scope_val})
+                if stamped:
+                    for f in fields:
+                        f["row_scope"] = scope_sel
+                    print(f"  [SCOPE] EDU entry scoped to {scope_sel!r}")
+                else:
+                    print(f"  [SCOPE] EDU scope stamp failed — falling back to data-fill-idx")
         else:
             fields = all_fields[count_before:] if count_before > 0 else all_fields
     elif section_type == "lang" and fields_before is not None:
@@ -1534,6 +1742,14 @@ async def fill_add_dialog(page: Page, dialog_label: str, entry: dict = None, sec
     for f in fields:
         f["page_heading"] = dialog_label
         f["section"] = dialog_label
+
+    # For WE dialogs: if the first field has an empty label and is a text input,
+    # it's almost certainly the Job Title field (Workday sometimes omits aria-label on it).
+    if section_type == "work" and fields:
+        first = fields[0]
+        if not first.get("label") and first.get("tag") in ("input","textarea") \
+                and first.get("type","text") not in ("checkbox","radio","button","select-one"):
+            first["label"] = "Job Title"
 
     # Annotate ambiguous "Month"/"Year" labels with start/end position
     # (Workday uses generic "Month"/"Year" labels — first occurrence = start, second = end)
@@ -1725,6 +1941,10 @@ async def exec_skills_field(page: Page, field: dict, skills: list[str]):
         return False
 
     for skill in skills:
+        # Guard: if the page/browser closed mid-loop, stop cleanly
+        if page.is_closed():
+            print(f"    [SKILLS] page closed mid-loop — stopping skill fill")
+            break
         if fid:
             inp = page.locator(f"input#{fid}").first
         else:
@@ -1772,6 +1992,11 @@ async def exec_skills_field(page: Page, field: dict, skills: list[str]):
             await page.wait_for_timeout(600)  # flush any pending network responses
             print(f"    ~ skill '{skill}' — no results")
             continue
+
+        # Re-read pills: Workday sometimes auto-commits the top option on Enter before we click.
+        # If the pill is already present, clicking again would toggle it off — skip the click.
+        fresh_pills = set(await page.evaluate(PILLS_JS, {"fid": fid, "idx": idx}))
+        current_pills.update(fresh_pills)
 
         # Pick best match: DeepSeek if available (with rule-based fallback), else rule-based only
         def rule_score(opt):
@@ -1993,34 +2218,46 @@ async def handle_my_experience(page: Page):
                             return inp ? inp.value.trim() : '';
                         }});
                     }}
-                    // Fallback: count DELETE_charm buttons scoped to this section.
-                    // Also count undeletable pre-rendered blank rows (no DELETE_charm but has
-                    // a school input) — Salesforce wd12 spawns 1 blank EDU row that can't be deleted.
+                    // Fallback: count EDU rows by scoping to this add-button's section and
+                    // enumerating formField-degree CONTAINER ELEMENTS — exactly one per EDU row.
+                    // Using mixed anchor types (degree button + FoS input + school input) overcounts
+                    // because the same row has multiple such elements in different wrapper divs.
+                    // formField-degree is the single most reliable one-per-row element.
                     const addBtns = Array.from(document.querySelectorAll('[data-automation-id="add-button"]'));
                     const eduBtn = addBtns[{edu_btn_idx}];
                     if (!eduBtn) return [];
                     let node = eduBtn.parentElement;
                     for (let i = 0; i < 8 && node && node !== document.body; i++) {{
-                        const dels = node.querySelectorAll('[data-automation-id="DELETE_charm"]');
-                        const schoolInputs = node.querySelectorAll('[data-automation-id="formField-school"] input, input[data-automation-id="school"]');
-                        const hasSchoolInputs = schoolInputs.length > 0;
-                        if (dels.length > 0 || hasSchoolInputs) {{
-                            // Build result: deleted-charm entries + undeletable blank slots
-                            const result = Array.from({{length: dels.length}}, (_, j) => 'existing_edu_' + j);
-                            // Count school inputs that have no sibling DELETE_charm in their ancestor chain
-                            for (const si of schoolInputs) {{
-                                let anc = si.parentElement;
+                        const degFields = Array.from(node.querySelectorAll('[data-automation-id="formField-degree"]'));
+                        if (degFields.length > 0) {{
+                            // One entry per formField-degree container. Classify filled vs blank:
+                            // - Has DELETE_charm ancestor → existing/filled entry (was added by user or a prior run).
+                            // - No DELETE_charm → undeletable pre-spawned blank row (Salesforce mandatory).
+                            // Determine value from the degree button aria-label or the row's school input.
+                            return degFields.map(ff => {{
+                                // Walk up to find if this row has a DELETE_charm
+                                let anc = ff.parentElement;
                                 let hasDelete = false;
-                                for (let j = 0; j < 10 && anc && anc !== node; j++) {{
+                                for (let j = 0; j < 12 && anc && anc !== node; j++) {{
                                     if (anc.querySelector('[data-automation-id="DELETE_charm"]')) {{
                                         hasDelete = true;
                                         break;
                                     }}
                                     anc = anc.parentElement;
                                 }}
-                                if (!hasDelete) result.push('');  // blank undeletable slot
-                            }}
-                            return result;
+                                if (hasDelete) {{
+                                    // Filled/existing — read school pill or input value
+                                    const pill = ff.closest('div')?.querySelector('[data-automation-id="selectedItem"]');
+                                    if (pill && pill.innerText.trim()) return pill.innerText.trim();
+                                    const schoolInp = node.querySelector('[data-automation-id="formField-school"] input');
+                                    return schoolInp ? schoolInp.value.trim() : 'existing_edu';
+                                }}
+                                // No DELETE_charm → pre-spawned blank row.
+                                // Check if degree is still "Select One" (blank) or already filled.
+                                const btn = ff.querySelector('button');
+                                const lbl = (btn ? (btn.getAttribute('aria-label') || btn.innerText || '') : '').toLowerCase();
+                                return lbl.includes('select one') ? '' : lbl;
+                            }});
                         }}
                         node = node.parentElement;
                     }}
@@ -2031,6 +2268,13 @@ async def handle_my_experience(page: Page):
             filled_count = sum(1 for v in entry_values if v)
             blank_count  = sum(1 for v in entry_values if not v)
             existing_count = len(entry_values)
+            # Hard cap: blank_count can never exceed the number of physically distinct EDU rows
+            # detected (= len(entry_values)).  This is a safety net — the single-anchor count above
+            # should already yield 1 per row, but this prevents any future regression from allowing
+            # two in-place fills into the same single row.
+            if section_type == "edu" and blank_count > existing_count:
+                print(f"  [ADD] EDU blank_count cap: {blank_count} → {existing_count} (clamped to row count)")
+                blank_count = existing_count
             print(f"  [ADD] '{btn_info['label']}' existing={existing_count} (filled={filled_count} blank={blank_count}), need={len(data_list)}")
 
             # Delete blank Workday-initialized rows to avoid orphan empty entries causing save errors.
@@ -2177,25 +2421,70 @@ async def handle_my_experience(page: Page):
             # After the first Add click for EDU, check whether Workday revealed a pre-rendered
             # blank row in addition to the new row (Salesforce wd12 pattern: clicking Add for
             # the first time expands a section that already contains 1 blank entry, so we get
-            # 2 rows instead of 1).  If so, promote blank_count so subsequent entries skip Add.
+            # 2 rows instead of 1).  If so, promote blank_count so entry 0 fills in-place.
+            # NOTE: this path triggers only when pre-loop detected blank_count==0 (no visible rows
+            # before any Add click) and entry_idx==0 just clicked Add.  If we end up with 2 rows
+            # (mandatory + new), promote blank_count to 1 so entry 0 fills the mandatory row and
+            # entry 1 still clicks Add to create another row (3 total = 2 fills + 1 error check).
+            # Use formField-degree CONTAINERS (one per row) consistent with pre-loop detection.
             if section_type == "edu" and entry_idx == 0 and blank_count == 0:
-                post_click_vals = await page.evaluate("""() =>
-                    Array.from(document.querySelectorAll('[data-automation-id="formField-school"]'))
-                    .map(el => {
-                        const pill = el.querySelector('[data-automation-id="selectedItem"]');
-                        if (pill && pill.innerText.trim()) return pill.innerText.trim();
-                        const inp = el.querySelector('input');
-                        return inp ? inp.value.trim() : '';
-                    })""")
+                post_click_vals = await page.evaluate("""() => {
+                    // Prefer formField-school (most tenants show it immediately)
+                    const schools = Array.from(document.querySelectorAll('[data-automation-id="formField-school"]'));
+                    if (schools.length > 0) {
+                        return schools.map(el => {
+                            const pill = el.querySelector('[data-automation-id="selectedItem"]');
+                            if (pill && pill.innerText.trim()) return pill.innerText.trim();
+                            const inp = el.querySelector('input');
+                            return inp ? inp.value.trim() : '';
+                        });
+                    }
+                    // Fallback: count formField-degree CONTAINERS — one per EDU row, same logic
+                    // as the pre-loop probe. Avoids overcounting from mixed anchor types.
+                    const degFields = Array.from(document.querySelectorAll('[data-automation-id="formField-degree"]'));
+                    return degFields.map(ff => {
+                        const btn = ff.querySelector('button');
+                        const lbl = (btn ? (btn.getAttribute('aria-label') || btn.innerText || '') : '').toLowerCase();
+                        return lbl.includes('select one') ? '' : lbl;
+                    });
+                }""")
+                total_rows = len(post_click_vals)
                 total_blank = sum(1 for v in post_click_vals if not v)
-                if total_blank > 1:
-                    # More blank slots than the 1 we just added — pre-rendered rows exist.
-                    # Set blank_count to total blank slots so all remaining entries (including
-                    # entry_idx=0 which we're about to fill now) use in-place fill logic.
-                    # entry_idx=1 will see 1 < total_blank and skip the Add click.
-                    blank_count = total_blank
-                    print(f"  [ADD] Detected {total_blank} blank EDU slots after first Add — "
-                          f"all will be filled in-place (no more Add clicks)")
+                if total_rows >= 2 and total_blank >= 1:
+                    # 2+ rows visible after first Add click: a pre-spawned mandatory row exists
+                    # alongside the newly-added row.  This can happen on Salesforce wd12 when the
+                    # mandatory row isn't in DOM before the Add button is clicked.
+                    # We must fill entry 0 into the FIRST anchor (mandatory row), NOT the last.
+                    # fill_add_dialog always targets anchor_positions[-1] = the last School anchor.
+                    # With 2 rows now in DOM, anchor[-1] = the newly-added row = wrong order.
+                    # Solution: promote blank_count to 1 so the fill below still targets last anchor
+                    # (newly-added row for entry 0 = ASU), then entry 1 will click Add again and fill
+                    # UCSD into the third row's last anchor.  The MANDATORY row (first anchor) won't
+                    # be filled by this path — but the next save retry or the user can fill it.
+                    # BETTER: don't fill entry 0 into the newly-added row (wrong position).
+                    # Instead, DON'T call fill_add_dialog for this Add click — delete the newly-added
+                    # row if possible, reset, and let the normal in-place path handle both rows.
+                    # Practical: just promote blank_count=total_rows so both entries go in-place.
+                    # fill_add_dialog for entry 0 calls anchor[-1] = last school anchor = the newly-
+                    # added row (row 2, blank) and fills ASU there.  Entry 1 in-place calls anchor[-1]
+                    # again = STILL the same last anchor = overwrites ASU with UCSD.  BROKEN.
+                    #
+                    # TRUE fix: promote blank_count=1 and continue WITHOUT calling fill_add_dialog
+                    # for this iteration.  Entry 0 will be re-evaluated: entry_idx(0) < blank_count(1)
+                    # → in-place.  But the loop doesn't re-evaluate — it calls fill_add_dialog below.
+                    # The only safe fallback when we've already clicked Add and now see 2 rows:
+                    # fill entry 0 into anchor[-1] (the newly-added row) here, and treat the
+                    # mandatory row as entry -1 that was pre-spawned.  Then entry 1 clicks Add again.
+                    # This fills ASU into row 2 (last/new), leaves mandatory row (row 1) blank.
+                    # That's still wrong — mandatory row is blank → save fails.
+                    #
+                    # The primary fix (Fix 1 pre-loop detection) should prevent blank_count==0 from
+                    # ever reaching this path on Salesforce.  This block is a last-resort safety net
+                    # for timing races on unknown tenants.  Best we can do here: promote blank_count=1
+                    # so the loop knows to start clicking Add from entry 1 onward, and log clearly.
+                    blank_count = 1
+                    print(f"  [ADD] Detected {total_rows} EDU rows after first Add ({total_blank} blank) — "
+                          f"promoting blank_count=1 (timing-race fallback; pre-loop detection should have caught this)")
 
             await fill_add_dialog(page, dialog_label, entry=entry, section_type=section_type,
                                   count_before=count_before, fields_before=fields_before)
@@ -2315,11 +2604,22 @@ async def handle_my_experience(page: Page):
             # ── Re-fill EDU combobox fields (School, Field of Study) if EMPTY on retry ──
             # Only re-fill if pill is absent — re-opening a filled combobox leaves the dropdown
             # open and blocks Save and Continue.
+            # Guard: if DOM row count no longer matches len(EDU), the page re-stamped indices.
+            # Positional mapping (edu_combobox_i // 2) would target wrong entries — skip it.
+            live_edu_rows = await page.evaluate("""() => (
+                document.querySelectorAll('[data-automation-id="formField-degree"]').length ||
+                document.querySelectorAll('[data-automation-id="formField-school"]').length
+            )""")
+            _edu_layout_ok = (live_edu_rows == len(EDU)) if EDU else True
+            if not _edu_layout_ok:
+                print(f"  [RETRY] EDU DOM layout changed ({live_edu_rows} rows vs {len(EDU)} expected) — skipping positional re-fill")
             all_comboboxes = [rf for rf in retry_fields
                               if rf.get("isSelectInput")
                               and rf.get("label","")]
             edu_combobox_i = 0
             for cb_f in all_comboboxes:
+                if not _edu_layout_ok:
+                    break
                 lbl_l = cb_f.get("label","").lower()
                 edu_ent_i = edu_combobox_i // 2  # ~2 comboboxes per EDU entry
                 ent = EDU[edu_ent_i] if edu_ent_i < len(EDU) else (EDU[-1] if EDU else None)
@@ -2361,12 +2661,17 @@ async def handle_my_experience(page: Page):
                             if label_match(d.get("label","").lower(),
                                            "degree","degree type","level of education")]
             for drop_i, drop_f in enumerate(degree_drops):
+                if not _edu_layout_ok:
+                    break
                 ent = EDU[drop_i] if drop_i < len(EDU) else (EDU[-1] if EDU else None)
                 if not ent:
                     continue
-                # Use degree_type first (e.g. "Master's Degree" → fuzzy matches "Masters"),
-                # fall back to abbreviation only if type is empty.
-                search_val = ent.get("degree_type","") or ent.get("degree_abbreviation","")
+                # Match original fill priority: abbreviation first → search variants → full type.
+                # NEVER use degree_type first — "Master's Degree" fuzzy-matches "MA" (contains "ma")
+                # instead of "MS" via fuzzy_pick's substring strategy.
+                search_val = (ent.get("degree_abbreviation","")
+                              or next(iter(ent.get("degree_search_variants",[])), "")
+                              or ent.get("degree_type",""))
                 if search_val:
                     print(f"  [RETRY] Re-filling Degree dropdown [{drop_i}] = {search_val!r}")
                     await exec_button_dropdown(page, drop_f, search_val)
@@ -2622,7 +2927,7 @@ async def _scrape_listing_salary(page: Page) -> str | None:
         print(f"[NAV] Listing salary midpoint: ${result}")
     return result
 
-async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
+async def main(job_url: str, headed: bool = False):
     mode = "DeepSeek" if DEEPSEEK_KEY else "rule-based fallback"
     key_hint = f"sk-...{DEEPSEEK_KEY[-4:]}" if DEEPSEEK_KEY else "NOT SET (add DEEPSEEK_API_KEY to data/.env)"
     print(f"[BOT] Workday Application Bot")
@@ -2669,6 +2974,10 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
         _profile_data["job_listing_locations"] = listing_locations
         _profile_data["today"] = datetime.date.today().isoformat()
         _mod.PROFILE_SUMMARY = json.dumps(_profile_data, indent=2)
+        # Mirror into app_common so rule_based_answer (which reads app_common.PROFILE_SUMMARY)
+        # also sees job_listing_locations and the updated salary/date.
+        import app_common as _ac
+        _ac.PROFILE_SUMMARY = _mod.PROFILE_SUMMARY
 
         # No proactive sign-in on listing page — navigate directly to /apply URL.
         # Tenants that require auth will redirect to their sign-in page inside the form flow,
@@ -2929,7 +3238,8 @@ async def main(job_url: str = DEFAULT_JOB_URL, headed: bool = False):
             except Exception as e:
                 print(f"  [ERR] {e}")
                 err_ss = f"error_p{page_num}.png"
-                await page.screenshot(path=str(ARTIFACTS / err_ss))
+                if not page.is_closed():
+                    await page.screenshot(path=str(ARTIFACTS / err_ss))
                 RUN_REPORT["final"] = "error"
                 _report_page(page_num, heading, "error", errors=[str(e)], screenshot=err_ss)
                 break
@@ -2947,7 +3257,10 @@ if __name__ == "__main__":
     headed = "--show" in args
     sim_ds = "--sim-ds" in args   # simulate DeepSeek code path using rule-based answers
     url_args = [a for a in args if not a.startswith("--")]
-    job_url = url_args[0] if url_args else DEFAULT_JOB_URL
+    if not url_args:
+        print("Usage: python3 -u src/app_workday.py <WORKDAY_JOB_URL> [--show] [--sim-ds]")
+        sys.exit(1)
+    job_url = url_args[0]
 
     if sim_ds and not DEEPSEEK_KEY:
         # Monkey-patch at module globals so every code path that checks DEEPSEEK_KEY

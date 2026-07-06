@@ -98,6 +98,13 @@ MONTH_NUM = {
     "july":"07","august":"08","september":"09","october":"10","november":"11","december":"12",
 }
 
+US_STATE_ABBR = {
+    "california":"CA","washington":"WA","texas":"TX","new york":"NY","massachusetts":"MA",
+    "indiana":"IN","arizona":"AZ","georgia":"GA","illinois":"IL","colorado":"CO",
+    "virginia":"VA","michigan":"MI","florida":"FL","oregon":"OR","north carolina":"NC",
+    "pennsylvania":"PA","new jersey":"NJ","ohio":"OH","nevada":"NV","utah":"UT",
+}
+
 # ── Profile summary (runtime fields filled by each applicator) ────────────────
 PROFILE_SUMMARY = json.dumps({
     "personal_info":            {k: v for k, v in PI.items() if k not in ("password",)},
@@ -246,17 +253,46 @@ def fuzzy_pick(opts: list[str], value: str) -> str | None:
     return None
 
 
-def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
-    """Return the best library.json-grounded answer for a field, or None if no match."""
+def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) -> str | None:
+    """Return the best library.json-grounded answer for a field, or None if no match.
+
+    exclude: optional set of option strings to skip (used for per-slot location dedup).
+    """
     label   = field.get("label", "")
     opts    = field.get("options", [])
     section = (field.get("section") or field.get("page_heading") or context_hint).lower()
+    # Also track context_hint separately so graduation signals passed from smart_fill_page
+    # aren't overridden by a generic section heading like "Application Questions 2 of 2".
+    _context_hint_lower = context_hint.lower() if context_hint else ""
     tag     = field.get("tag", "")
     ftype   = field.get("type", "")
     current = field.get("value", "")
 
-    # Skip already-filled fields (except unchecked checkboxes)
-    if current and current.lower() not in ("select one", "", "false", "unchecked") \
+    # Fields that must always be re-answered (bot may have wrong values from a prior session).
+    _force_override_labels = (
+        "preferred location", "location 1", "location 2", "location 3",
+        "futureforce", "office location", "work location",  # location dropdowns
+        "preferred geographic", "geographic preference", "location preference",  # App-Q1 text box
+        "postgraduate", "graduate degree", "intend to enroll",
+        "pursuing a degree", "graduate school",             # postgrad intent
+    )
+    _grad_ctx_override = any(k in section or k in _context_hint_lower for k in
+                             ("graduation", "anticipated graduation", "expected graduation", "anticipated"))
+    # Also detect location dropdowns by option content: if options look like "City, State" pairs
+    # (Workday pre-fills aria-label with selected value, so the field label may not say "location").
+    _state_abbrevs = (" washington", " california", " texas", " georgia", " massachusetts",
+                      " colorado", " virginia", " indiana", " arizona", " michigan", ", wa",
+                      ", ca", ", tx", ", ga", ", ma", ", co", ", va", ", in", ", az", ", mi")
+    _opts_look_like_locations = (
+        tag == "button" and len(opts) >= 4 and
+        sum(1 for o in opts if any(s in o.lower() for s in _state_abbrevs)) >= 3
+    )
+    _force = (any(kw in label.lower() for kw in _force_override_labels)
+              or _opts_look_like_locations
+              or (_grad_ctx_override and label_match(label, "month", "day", "year")))
+
+    # Skip already-filled fields (except unchecked checkboxes and forced overrides)
+    if not _force and current and current.lower() not in ("select one", "", "false", "unchecked") \
             and "select one" not in current.lower():
         return None
 
@@ -324,22 +360,78 @@ def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
     if tag in ("input", "textarea") or ftype in ("text", "email", "tel", "number"):
 
         if field.get("isSelectInput"):
+            # ── React-Select / Greenhouse combobox fields ──────────────────
             if label_match(label, "how did you hear", "source", "referral", "learn about"):
                 hear_terms = JBM.get("hear_about_us_fallback_order",
                     ["LinkedIn", "Internet/Online Job Posting", "Job Board", "Other"])
                 return "\n".join(hear_terms)
             if label_match(label, "country") and not label_match(label, "phone"):
-                return "United States of America"
+                return "United States"
             if label_match(label, "state", "province"):
                 if "united" not in label.lower() and len(label) < 50:
                     return PI["state"]
+            if label_match(label, "city", "location (city)", "candidate-location"):
+                return PI.get("city", "San Jose")
+            # Education dropdowns
+            if label_match(label, "school", "institution", "university", "college") \
+                    and not label_match(label, "high school"):
+                school = EDU[0]["institution_variants"][0] if EDU else ""
+                return school
+            if label_match(label, "degree", "education level", "highest education"):
+                deg = (EDU[0].get("degree_type") or EDU[0].get("degree","Bachelor's Degree") if EDU else "Bachelor's Degree")
+                return deg
+            # Custom GH questions
+            if label_match(label, "open to working", "onsite", "on site", "4 days"):
+                # Sigma: options are NYC / SF / London / Remote only
+                # "No" → "Remote only"; prefer SF if local, else Remote only
+                city = PI.get("city", "").lower()
+                if "san francisco" in city or "sf" in city or "san jose" in city \
+                        or "milpitas" in city or "sunnyvale" in city or "bay" in city:
+                    return "SF"
+                return "Remote only"
+            if label_match(label, "relocat"):
+                return "Yes"
+            if label_match(label, "acknowledge", "confirm", "agree to the following",
+                           "certif", "consent"):
+                return "Yes"
+            if label_match(label, "sponsor", "h-1b", "h1b", "visa sponsorship"):
+                return "No" if not NEEDS_SPONSOR else "Yes"
+            if label_match(label, "visa status", "current visa", "work authorization status"):
+                return PI.get("visa_status", "U.S. Citizen")
+            if label_match(label, "personal pronoun", "pronoun"):
+                return PI.get("pronouns", "He/ Him")
+            # EEO / self-identification dropdowns
+            # When configured to decline, return a decline sentinel for ALL identity fields
+            # (gender identity, sexual orientation, transgender, gender, sex, race, ethnicity,
+            # hispanic/latino) — the executor fuzzy-matches this against the real options.
+            _decline_mode = "decline" in str(REG.get("primary_demographic_action", "")).lower()
+            # Decline ONLY the expanded LGBTQ+ identity fields (not standard EEO gender/race/hispanic)
+            if _decline_mode and label_match(label, "gender identity", "sexual orientation",
+                                             "transgender"):
+                return "I do not wish to answer"
+            if label_match(label, "gender", "sex"):
+                fb = REG.get("fallback_gender", "Male")
+                return fb
+            if label_match(label, "hispanic", "latino"):
+                val = str(REG.get("fallback_hispanic_ethnicity", "No")).lower()
+                return "No" if val in ("no", "false", "0", "") else "Yes"
+            if label_match(label, "race", "ethnicity"):
+                return REG.get("fallback_race", "Asian")
+            if label_match(label, "veteran"):
+                return "I am not a protected veteran"
+            if label_match(label, "disability"):
+                if DISABILITY_ANSWER == "yes":
+                    return "Yes, I have a disability, or have had one in the past"
+                return "I do not want to answer"
             return None
 
+        if label_match(label, "preferred first name", "preferred name", "nickname", "goes by"):
+            return PI.get("preferred_name", "Josh")
         if label_match(label, "first name", "given name"):       return PI["first_name"]
         if label_match(label, "last name", "surname", "family name"): return PI["last_name"]
         if label_match(label, "middle name", "middle initial"):  return ""
         if label_match(label, "email"):                          return PI["email"]
-        if label_match(label, "phone number", "telephone", "cell number", "mobile number"):
+        if label_match(label, "phone number", "telephone", "cell number", "mobile number", "phone"):
             if label_match(label, "extension", "ext"):           return ""
             return PHONE_DIGITS
         if label_match(label, "address line 1", "street address", "address 1"):
@@ -354,18 +446,59 @@ def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
         if label_match(label, "linkedin"):       return PI.get("linkedin", "")
         if label_match(label, "github", "portfolio", "website", "url"):
             return PI.get("github", "")
-        if label_match(label, "salary", "compensation", "pay", "wage", "expected"):
+        if label_match(label, "salary", "compensation", "pay", "wage", "expected") \
+                and not label_match(label, "open to working", "onsite", "4 days"):
             return str(COMP.get("baseline_target_pay", COMP.get("expected_base_salary", "120000")))
+
+        if label_match(label, "current company", "current employer", "employer name") \
+                and "work" not in section and "experience" not in section:
+            return WE[0]["company"] if WE else ""
+
+        if label_match(label, "current visa status", "visa status", "work authorization status") \
+                and not field.get("isSelectInput"):
+            return PI.get("visa_status", "U.S. Citizen")
 
         if label_match(label, "name") and "employee" not in label.lower():
             return f"{PI['first_name']} {PI['last_name']}"
 
-        # STEP 4: Preferred geographic/location text field (from Workday line 489-491)
+        # STEP 4: Preferred geographic/location TEXT field (App-Q1 textarea; NOT the App-Q2 dropdowns).
+        # Use the LISTING's primary location, not the candidate's home city.
         if label_match(label, "preferred geographic", "preferred location", "geographic preference",
                        "location preference"):
-            return PI.get("city", "San Diego") + ", CA"
+            try:
+                _ll = json.loads(PROFILE_SUMMARY).get("job_listing_locations", [])
+            except Exception:
+                _ll = []
+            if _ll:
+                _primary = str(_ll[0]).strip()          # e.g. "California - San Francisco"
+                if " - " in _primary:                    # normalize "State - City" → "City, ST"
+                    _state, _city = [p.strip() for p in _primary.split(" - ", 1)]
+                    _st = US_STATE_ABBR.get(_state.lower(), _state)
+                    return f"{_city}, {_st}"
+                return _primary
+            return PI.get("city", "San Diego") + ", CA"  # fallback: home city
 
-        if label_match(label, "month", "day", "year") and (
+        # Graduation context: check the field label OR the page/section context (e.g. question heading
+        # "Please input your anticipated graduation date" passed via context_hint/heading as `section`).
+        _grad_ctx = any(k in section or k in _context_hint_lower for k in
+                        ("graduation", "anticipated graduation", "expected graduation", "anticipated"))
+        # Graduation date FIRST — keyed off page context so bare Month/Day/Year fields still fire.
+        if _grad_ctx and label_match(label, "month", "day", "year"):
+            school = next((e for e in EDU if "attending" in e.get("current_status","").lower()), None)
+            if school:
+                if label_match(label, "month"): return MONTH_NUM.get(school.get("end_month","").lower(), "")
+                if label_match(label, "day"):   return "01"
+                if label_match(label, "year"):  return str(school.get("end_year",""))
+        # Keep old label-based graduation branch for edge cases where label includes "graduation".
+        if label_match(label, "graduation", "anticipated graduation", "expected graduation") and \
+                label_match(label, "month", "day", "year"):
+            school = next((e for e in EDU if "attending" in e.get("current_status","").lower()), None)
+            if school:
+                if label_match(label, "month"): return MONTH_NUM.get(school.get("end_month","").lower(), "")
+                if label_match(label, "day"):   return "01"
+                if label_match(label, "year"):  return str(school.get("end_year",""))
+        # Generic availability date — only when NOT a graduation page.
+        if not _grad_ctx and label_match(label, "month", "day", "year") and (
             "application" in section or
             not any(k in section for k in ("work","experience","education","school","self identify","signature"))
         ):
@@ -375,14 +508,6 @@ def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
             if label_match(label, "day"):   return str(avail.day).zfill(2)
             if label_match(label, "year"):  return str(avail.year)
 
-        if label_match(label, "graduation", "anticipated graduation", "expected graduation") and \
-                label_match(label, "month", "day", "year"):
-            school = next((e for e in EDU if "attending" in e.get("current_status","").lower()), None)
-            if school:
-                if label_match(label, "month"): return MONTH_NUM.get(school.get("end_month","").lower(), "")
-                if label_match(label, "day"):   return "01"
-                if label_match(label, "year"):  return str(school.get("end_year",""))
-
         if "work" in section or "experience" in section or "employment" in section:
             if label_match(label, "company", "employer", "organization"):
                 return WE[0]["company"] if WE else ""
@@ -391,7 +516,11 @@ def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
             if label_match(label, "city", "location"):
                 return WE[0].get("city", "") if WE else ""
             if label_match(label, "description", "responsibilities", "summary"):
-                return (WE[0].get("description","")[:500]) if WE else ""
+                if not WE: return ""
+                desc = WE[0].get("description","")
+                ml = field.get("maxlength") or 0
+                cap = ml if ml > 0 else 4000  # respect DOM limit; 4000 safe ceiling if absent
+                return desc[:cap]
             # STEP 2: WE start/end year text fields (from Workday lines 517-520)
             if label_match(label, "start year"):
                 return WE[0].get("start_year","") if WE else ""
@@ -418,12 +547,16 @@ def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
         if not opts:
             return None
 
-        if label_match(label, "export control", "arms export", "itar", "u.s. persons",
-                       "citizenship status", "controlled information"):
+        _opts_l_all = [o.lower() for o in opts]
+        _is_yes_no = set(o for o in _opts_l_all if o not in ("select one", "")) <= {"yes", "no"}
+        if not _is_yes_no and label_match(label, "export control", "arms export", "itar",
+                                          "u.s. persons", "citizenship status",
+                                          "controlled information"):
             return fuzzy_pick(opts, "U.S. Citizen") or next(
                 (o for o in opts if "citizen" in o.lower() and "select" not in o.lower()), None)
 
-        if label_match(label, "18 years of age", "18 years old", "at least 18"):
+        if label_match(label, "18 years of age", "18 years old", "at least 18", "18 years or older",
+                       "years of age or older", "at least 18 years"):
             return fuzzy_pick(opts, "Yes") or opts[0]
 
         if label_match(label, "currently employed", "present employer", "may we speak to"):
@@ -451,7 +584,8 @@ def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
             return fuzzy_pick(opts, "None of the above") or \
                    next((o for o in opts if "none" in o.lower()), None) or opts[0]
 
-        if label_match(label, "gender", "sex", "race", "ethnicity", "hispanic",
+        if label_match(label, "gender identity", "sexual orientation", "transgender",
+                       "gender", "sex", "race", "ethnicity", "hispanic",
                        "latino", "veteran", "disability"):
             decline = pick_decline(opts)
             if decline: return decline
@@ -585,50 +719,66 @@ def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
         # STEP 8: Preferred/office location dropdown (from Workday lines 738-767)
         if label_match(label, "preferred location", "location 1", "location 2", "location 3",
                        "futureforce", "office location", "work location"):
+            _excl = exclude or set()
             opts_l = [o.lower() for o in opts]
-            # Step 1: Remote always wins
+            # Step 1: Remote always wins (but skip if excluded by prior slot).
             remote_kws = ("remote", "virtual", "work from home", "work-from-home", "wfh")
             for i, ol in enumerate(opts_l):
-                if any(kw in ol for kw in remote_kws) and ol not in ("select one",):
+                if any(kw in ol for kw in remote_kws) and ol not in ("select one",) \
+                        and opts[i] not in _excl:
                     return opts[i]
-            # Step 2: listing locations (runtime-injected into PROFILE_SUMMARY)
-            try:
-                _locs = json.loads(PROFILE_SUMMARY).get("job_listing_locations", [])
-            except Exception:
-                _locs = []
-            for loc in _locs:
-                hit = fuzzy_pick(opts, loc)
-                if hit and hit.lower() != "select one":
-                    return hit
-            # Step 3: walk the priority ladder
+            # Step 2 removed: listing-location fuzzy match caused "california" token collision
+            # (e.g. "California - San Francisco" → "Irvine/Santa Monica, California").
+            # Drive entirely from the priority ladder (Step 3) which uses specific city/region tokens.
+            # Step 3: walk the correct priority ladder.
+            # Determine country (US vs Canada) from listing locations; default US.
             _rp = LIBRARY.get("routing_priorities", {})
-            for ladder_entry in _rp.get("us_location_priority_ladder", []):
+            try:
+                _locs2 = json.loads(PROFILE_SUMMARY).get("job_listing_locations", [])
+            except Exception:
+                _locs2 = []
+            _canada_tokens = ("canada", "ontario", "british columbia", "alberta", "quebec",
+                              "toronto", "vancouver", "calgary", "montreal", " bc ", " on ", " ab ")
+            _us_tokens = ("united states", "california", "new york", "texas", "washington",
+                          "georgia", "illinois", "massachusetts", "colorado", "virginia",
+                          "indiana", "arizona", "michigan", " ca ", " ny ", " tx ", " wa ")
+            _locs2_lower = [str(l).lower() for l in _locs2]
+            _is_canada = (any(tok in l for tok in _canada_tokens for l in _locs2_lower)
+                          and not any(tok in l for tok in _us_tokens for l in _locs2_lower))
+            _country = "canada" if _is_canada else "us"
+            _ladder = (_rp.get(f"onsite_{_country}_location_priority_ladder", [])
+                       or _rp.get(f"remote_{_country}_location_priority_ladder", []))
+            for ladder_entry in _ladder:
                 kws = re.split(r'[/,()\s]+', ladder_entry)
-                kws = [k.strip().lower() for k in kws if len(k.strip()) > 2]
+                # Minimum 6 chars to avoid short tokens ("san", "bay", "los", "new", "santa",
+                # "menlo", "palo", "clara") causing cross-city collisions — e.g. "santa" from
+                # "Santa Clara" (Bay Area ladder entry) matching "Santa Monica" in an option.
+                kws = [k.strip().lower() for k in kws if len(k.strip()) >= 6]
                 for i, ol in enumerate(opts_l):
                     if ol in ("select one",):
+                        continue
+                    if opts[i] in _excl:
                         continue
                     if any(kw in ol for kw in kws):
                         return opts[i]
             return None
 
-        # Postgraduate intent
+        # Postgraduate intent — "Do you intend to ENROLL in a postgraduate degree?"
+        # Josh is already in/completing his terminal Master's program, so he will NOT newly
+        # enroll in another postgraduate degree → always "No".
         if label_match(label, "postgraduate", "graduate degree", "intend to enroll",
                        "pursuing a degree", "graduate school"):
-            currently_in_grad = any(
-                "attending" in e.get("current_status","").lower() and
-                any(kw in e.get("degree_type","").lower() for kw in ("master","phd","doctoral","graduate"))
-                for e in EDU
-            )
-            return fuzzy_pick(opts, "Yes" if currently_in_grad else "No") or opts[0]
+            return fuzzy_pick(opts, "No") or (opts[-1] if opts else None)
 
-        # STEP 9: Communications/future-openings opt-in (from Workday lines 782-789)
+        # STEP 9: Communications/future-openings — always opt OUT ("No / please do not contact").
         if label_match(label, "future positions", "future openings",
                        "receive communications", "contact me about"):
             non_select = [o for o in opts if o.lower() not in ("select one", "")]
-            yes_opt = next((o for o in non_select if re.search(r'\byes\b', o, re.IGNORECASE) or
-                           re.search(r'\bwould like\b', o, re.IGNORECASE)), None)
-            return yes_opt or (non_select[0] if non_select else None)
+            no_opt = next((o for o in non_select
+                           if re.search(r'do not|don.t|please do not', o, re.IGNORECASE)
+                           or (re.search(r'\bno\b', o, re.IGNORECASE)
+                               and not re.search(r'\byes\b', o, re.IGNORECASE))), None)
+            return no_opt or (non_select[-1] if non_select else None)
 
         if label_match(label, "language"):
             return fuzzy_pick(opts, "English") or opts[0]
@@ -667,9 +817,18 @@ def rule_based_answer(field: dict, context_hint: str = "") -> str | None:
 def rule_based_fill_fields(fields: list[dict], context_hint: str = "") -> list[dict]:
     """Apply rule_based_answer to all fields. Returns [{index, value}]."""
     answers = []
+    _used_locations: set = set()  # per-slot dedup across preferred-location dropdowns
+    _location_labels = ("preferred location", "location 1", "location 2", "location 3",
+                        "futureforce", "office location", "work location")
     for f in fields:
-        val = rule_based_answer(f, context_hint)
+        is_loc = any(kw in f.get("label","").lower() for kw in _location_labels)
+        if is_loc:
+            val = rule_based_answer(f, context_hint, exclude=_used_locations)
+        else:
+            val = rule_based_answer(f, context_hint)
         if val is not None and val != "":
+            if is_loc:
+                _used_locations.add(val)
             answers.append({"index": f["index"], "value": val})
     return answers
 

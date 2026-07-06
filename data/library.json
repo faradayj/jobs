@@ -1,6 +1,7 @@
 {
   "personal_info": {
     "first_name": "Joshua",
+    "preferred_name": "Josh",
     "last_name": "Li",
     "email": "joshualingli@gmail.com",
     "phone": "(480) 616-8194",
@@ -296,7 +297,7 @@
       "proficiency": "Intermediate"
     }
   ],
-  "resume_path": "data/resume.pdf",
+  "resume_path": "data/resume_2026-06.pdf",
   "workday_accounts": {
     "cox": {
       "email": "joshualingli@gmail.com"

@@ -30,16 +30,17 @@ User says something like:
 ### Step 1 — Run the bot
 
 ```bash
-python3 -u src/app_workday.py "JOB_URL" --show > artifacts/run.txt 2>&1
+python3 -u src/app_workday.py "JOB_URL" > artifacts/run.txt 2>&1
 ```
 
-- `--show`: visible Chrome window; pauses at Review without submitting.
+- Runs **headless** by default (no dock-icon spam on macOS).
 - Output goes to `run.txt`; also tails in the terminal when run interactively.
 - Bot auto-saves `artifacts/run_report.json` on finish (even if it crashed).
+- Add `--show` only for final visual inspection or when a screenshot alone isn't enough to diagnose.
 
 For rule-based-only testing (no DeepSeek key needed):
 ```bash
-python3 -u src/app_workday.py "JOB_URL" --show --sim-ds > artifacts/run.txt 2>&1
+python3 -u src/app_workday.py "JOB_URL" --sim-ds > artifacts/run.txt 2>&1
 ```
 
 ### Step 2 — Read the report

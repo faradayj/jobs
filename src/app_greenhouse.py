@@ -197,17 +197,22 @@ async def scan_fields(page: Page) -> list[dict]:
             if (!isVisible(el)) continue;
             // Skip hidden / submit / button inputs
             if (['hidden','submit','button','file','checkbox','radio'].includes(el.type)) continue;
+            // Skip the hidden validation sentinel injected by GH's React-Select wrapper
+            // (class contains "requiredInput" and tabindex="-1" with aria-hidden="true")
+            if (el.getAttribute('aria-hidden') === 'true' && el.getAttribute('tabindex') === '-1') continue;
+            const isSelectInput = el.classList.contains('select__input');
             el.dataset.ghIdx = idx;
             fields.push({
-                index:   idx++,
-                tag:     el.tagName.toLowerCase(),
-                type:    el.type || 'text',
-                id:      el.id || '',
-                name:    el.name || '',
-                label:   getLabel(el),
-                section: getSection(el),
-                value:   el.value || '',
-                options: [],
+                index:        idx++,
+                tag:          el.tagName.toLowerCase(),
+                type:         el.type || 'text',
+                id:           el.id || '',
+                name:         el.name || '',
+                label:        getLabel(el),
+                section:      getSection(el),
+                value:        el.value || '',
+                options:      [],
+                isSelectInput: isSelectInput,
             });
         }
 
@@ -419,6 +424,78 @@ async def gh_exec_file(page: Page, resume_path: str, target=None):
         print(f"    ~ file  Upload failed: {e}")
 
 
+async def gh_exec_react_select(page: Page, field: dict, value: str, target=None):
+    """Fill a Greenhouse React-Select (select__input) combobox.
+
+    Strategy: click the input to open the dropdown, type the search value,
+    wait for the menu-list to appear, then click the best-matching option.
+    Falls back to plain text fill if no dropdown appears.
+    """
+    target = target or _tgt(page)
+    idx   = field["index"]
+    fid   = field.get("id", "")
+    label = field.get("label", "")
+    try:
+        # Locate by id if available, otherwise by data-gh-idx
+        if fid:
+            # CSS ID selectors can't start with a digit — use attribute selector instead
+            el = target.locator(f"input[id='{fid}']").first
+        else:
+            el = target.locator(f"[data-gh-idx='{idx}']").first
+        await el.scroll_into_view_if_needed(timeout=5000)
+        await el.click(timeout=5000)
+        await target.wait_for_timeout(400)
+        # For decline/prefer-not values, don't type — clicking alone opens the full list.
+        # Typing would filter options to nothing (react-select text-filter).
+        _DECLINE_VALS = ("do not wish", "prefer not", "decline", "choose not")
+        _is_decline = any(k in value.lower() for k in _DECLINE_VALS)
+        if not _is_decline:
+            await el.fill(value)
+            await target.wait_for_timeout(700)
+        # Wait for the dropdown menu
+        menu = target.locator(".select__menu-list, [class*='select__menu']").first
+        try:
+            await menu.wait_for(state="visible", timeout=3000)
+            # Get all visible option texts
+            opts_text = await target.evaluate("""() => {
+                const menu = document.querySelector('.select__menu-list, [class*=select__menu]');
+                if (!menu) return [];
+                return Array.from(menu.querySelectorAll('[class*=option]')).map(o => o.innerText.trim());
+            }""")
+            # Pick best match from visible options (first option if no better match)
+            from app_common import fuzzy_pick, pick_decline
+            # For decline values, prefer a decline option; fall back to fuzzy match
+            if _is_decline:
+                best = pick_decline(opts_text) or fuzzy_pick(opts_text, value)
+            else:
+                best = fuzzy_pick(opts_text, value) if opts_text else None
+            if best is None and opts_text:
+                best = opts_text[0]
+            if best:
+                # Click the matching option element
+                opt_loc = target.locator(f".select__option, [class*='select__option']").filter(has_text=best[:60]).first
+                if await opt_loc.count():
+                    await opt_loc.click(timeout=3000)
+                    await target.wait_for_timeout(300)
+                    print(f"    ✓ rsel  [{idx}] {label!r} = {best!r}")
+                    return
+            # Fallback: click first option
+            first_opt = target.locator("[class*='select__option']").first
+            if await first_opt.count():
+                first_text = await first_opt.inner_text()
+                await first_opt.click(timeout=3000)
+                print(f"    ~ rsel  [{idx}] {label!r} → first option {first_text!r}")
+                return
+        except Exception:
+            pass
+        # Last resort: press Enter to accept whatever is highlighted
+        await el.press("Enter")
+        await target.wait_for_timeout(300)
+        print(f"    ~ rsel  [{idx}] {label!r} = {value!r} (enter-confirm fallback)")
+    except Exception as e:
+        print(f"    ~ rsel  [{idx}] {label!r}: {e}")
+
+
 async def execute_answer(page: Page, field: dict, value: str, target=None):
     if not value:
         return
@@ -433,6 +510,8 @@ async def execute_answer(page: Page, field: dict, value: str, target=None):
             await gh_exec_radio(page, field, value, target=target)
         elif tag == "select" or ftype == "select-one":
             await gh_exec_select(page, field, value, target=target)
+        elif field.get("isSelectInput"):
+            await gh_exec_react_select(page, field, value, target=target)
         else:
             await gh_exec_text(page, field, value, target=target)
     except Exception as e:
@@ -584,13 +663,23 @@ async def main(job_url: str, headed: bool = False):
             answer_map = {a["index"]: a["value"] for a in answers}
             print(f"[GH] {len(answer_map)} fields to fill")
 
-            # Execute answers
+            # Execute answers (dedup: fill only the first LinkedIn / Website)
             filled = 0
+            _seen_once: set = set()
+            _DEDUP_KWS = ("linkedin", "website")
             for field in fields:
                 val = answer_map.get(field["index"])
-                if val:
-                    await execute_answer(page, field, val, target=target)
-                    filled += 1
+                if not val:
+                    continue
+                lbl_low = field.get("label", "").lower()
+                dk = next((k for k in _DEDUP_KWS if k in lbl_low), None)
+                if dk:
+                    if dk in _seen_once:
+                        print(f"    ⊘ skip  [{field['index']}] {field.get('label')!r} (duplicate {dk})")
+                        continue
+                    _seen_once.add(dk)
+                await execute_answer(page, field, val, target=target)
+                filled += 1
 
             print(f"\n[GH] Filled {filled}/{len(fields)} fields.")
 
