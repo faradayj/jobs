@@ -563,27 +563,20 @@ async def fetch_job_description(apply_url):
         finally:
             await browser.close()
 
-async def evaluate_job_with_llm(api_key: str, profile_data: dict, job_description: str) -> JobEvaluation:
-    """Evaluate candidate profile fit against scraped job description text using DeepSeek directly."""
-    system_prompt = f"""You are an expert technical recruiter. Evaluate a Job Description against the Candidate Profile below.
-
-Candidate Profile:
-{json.dumps(profile_data, indent=2)}
-
-Scoring Criteria — score 1, 2, or 3:
+SCORING_RUBRIC = """Scoring Criteria — score 1, 2, or 3:
 - Score 1 (High Priority / Strong Match): target titles (SWE/DS/MLE/DE), degree ≤ Master's in CS/DS, 0-3 yrs experience, multiple skill matches.
 - Score 2 (Medium Priority): major/experience aligns but missing some non-critical skills.
 - Score 3 (Low Priority / Ineligible): requires PhD, 4+ yrs full-time experience, or unrelated background.
 
 Output ONLY a valid JSON object — no markdown, no commentary:
-{{
+{
   "score": 1,
   "suitability_reason": "FIT:85 | +new-grad +Python +ML | -needs-Go -cleared",
-  "match_metrics": {{"overall_fit_percentage": 85, "confidence_score": 90}},
+  "match_metrics": {"overall_fit_percentage": 85, "confidence_score": 90},
   "core_alignments": ["requirement that matches candidate experience"],
   "technical_gaps": ["critical technology missing from candidate profile"],
   "vulnerability_analysis": "Where candidate might struggle in coding/system design interview."
-}}
+}
 
 IMPORTANT — suitability_reason format:
   "FIT:<fit_pct> | +<match1> +<match2> ... | -<gap1> -<gap2> ..."
@@ -591,6 +584,24 @@ IMPORTANT — suitability_reason format:
   • + tokens: key strengths / matching requirements (short kebab, max 4 words each).
   • - tokens: key gaps / disqualifiers (short kebab, max 4 words each).
   • Max length: 120 characters. Do NOT write prose — only this compact tag format."""
+
+SCORING_OUTPUT_SCHEMA = {
+    "score": "1 | 2 | 3",
+    "suitability_reason": "FIT:<n> | +match1 +match2 | -gap1 -gap2  (max 120 chars)",
+    "match_metrics": {"overall_fit_percentage": 0, "confidence_score": 0},
+    "core_alignments": ["requirement that matches candidate experience"],
+    "technical_gaps": ["critical technology missing from candidate profile"],
+    "vulnerability_analysis": "Where candidate might struggle in coding/system design interview.",
+}
+
+async def evaluate_job_with_llm(api_key: str, profile_data: dict, job_description: str) -> JobEvaluation:
+    """Evaluate candidate profile fit against scraped job description text using DeepSeek directly."""
+    system_prompt = f"""You are an expert technical recruiter. Evaluate a Job Description against the Candidate Profile below.
+
+Candidate Profile:
+{json.dumps(profile_data, indent=2)}
+
+{SCORING_RUBRIC}"""
 
     import httpx
     async with httpx.AsyncClient(timeout=45) as client:
@@ -958,6 +969,181 @@ async def run_evaluate(limit=10, dry_run=False):
         print("\n[+] Evaluation loop complete.")
         export_db_to_csv()
 
+EVAL_PENDING_PATH = Path(__file__).parent.parent / "artifacts" / "eval_pending.json"
+EVAL_SCORES_PATH  = Path(__file__).parent.parent / "artifacts" / "eval_scores.json"
+
+async def run_export_prompts(limit: int = -1):
+    """Scrape pending jobs and export descriptions + rubric to artifacts/eval_pending.json
+    for offline scoring (e.g. via Claude). No LLM calls made here."""
+    import datetime
+
+    if not PROFILE_PATH.exists():
+        print(f"[ERROR] Candidate profile not found at {PROFILE_PATH}.")
+        return
+
+    with open(PROFILE_PATH, "r", encoding="utf-8") as f:
+        profile_data = json.load(f)
+
+    conn = sqlite3.connect(DB_PATH)
+    cleanup_database_locations_and_errors(conn)
+    cursor = conn.cursor()
+
+    if limit == -1:
+        cursor.execute("SELECT id, company, role, location, apply_url FROM jobs WHERE status = 'Pending Evaluation'")
+    else:
+        cursor.execute(
+            "SELECT id, company, role, location, apply_url FROM jobs WHERE status = 'Pending Evaluation' LIMIT ?",
+            (limit,),
+        )
+    pending_jobs = cursor.fetchall()
+
+    if not pending_jobs:
+        print("[EXPORT] No pending jobs to scrape.")
+        conn.close()
+        return
+
+    print(f"[EXPORT] Scraping {len(pending_jobs)} pending jobs...")
+    exported = []
+    for job in pending_jobs:
+        job_id, company, role, location, apply_url = job
+        print(f"  Scraping [{job_id}] {company} — {role}...")
+        job_desc = await _scrape_job_description(apply_url)
+
+        if not job_desc or len(job_desc) < 300:
+            is_expired = job_desc and any(t in job_desc.lower() for t in EXPIRED_INDICATORS)
+            if is_expired:
+                print(f"    [EXPIRED] Marking Closed (Expired).")
+                cursor.execute(
+                    "UPDATE jobs SET status='Closed (Expired)', score=3, job_description=? WHERE id=?",
+                    (job_desc, job_id),
+                )
+            else:
+                print(f"    [FAIL] Fetch failed or too short — marking Fetch Failed.")
+                cursor.execute(
+                    "UPDATE jobs SET status='Fetch Failed / Manual Review' WHERE id=?", (job_id,)
+                )
+            conn.commit()
+            continue
+
+        print(f"    OK ({len(job_desc)} chars)")
+        exported.append({
+            "id": job_id,
+            "company": company,
+            "role": role,
+            "location": location,
+            "apply_url": apply_url,
+            "job_description": job_desc,
+        })
+
+    conn.close()
+    export_db_to_csv()   # persist expired/failed status changes
+
+    EVAL_PENDING_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "generated": datetime.datetime.now().isoformat(),
+        "rubric": SCORING_RUBRIC,
+        "output_schema": SCORING_OUTPUT_SCHEMA,
+        "profile": profile_data,
+        "jobs": exported,
+    }
+    with open(EVAL_PENDING_PATH, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+
+    print(f"\n[EXPORT] {len(exported)} jobs written to '{EVAL_PENDING_PATH}'.")
+    print(f"[EXPORT] {len(pending_jobs) - len(exported)} jobs marked expired/failed (not exported).")
+    print(f"[EXPORT] Next: have Claude score the file, then run:")
+    print(f"         python3 src/job_tracker.py evaluate --import-scores")
+
+
+def run_import_scores():
+    """Read artifacts/eval_scores.json (Claude-scored) and write results into DB → CSV."""
+    if not EVAL_SCORES_PATH.exists():
+        print(f"[ERROR] Scores file not found: {EVAL_SCORES_PATH}")
+        print(f"        Run 'evaluate --export-prompts', have Claude score it, then retry.")
+        return
+
+    with open(EVAL_SCORES_PATH, "r", encoding="utf-8") as f:
+        scores = json.load(f)
+
+    if not isinstance(scores, list):
+        print(f"[ERROR] eval_scores.json must be a JSON array of score objects.")
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    imported = 0
+    skipped = 0
+    for entry in scores:
+        apply_url = entry.get("apply_url", "")
+        job_id    = entry.get("id")
+
+        # Locate the DB row
+        row = None
+        if apply_url:
+            cursor.execute("SELECT id, company, role, location FROM jobs WHERE apply_url=?", (apply_url,))
+            row = cursor.fetchone()
+        if not row and job_id:
+            cursor.execute("SELECT id, company, role, location FROM jobs WHERE id=?", (job_id,))
+            row = cursor.fetchone()
+
+        if not row:
+            print(f"  [SKIP] No DB row for apply_url={apply_url!r} id={job_id}")
+            skipped += 1
+            continue
+
+        db_id, company, role, location = row
+
+        # Validate + normalise score
+        try:
+            score_val = int(entry.get("score", 3))
+            if score_val not in (1, 2, 3):
+                score_val = 3
+        except Exception:
+            score_val = 3
+
+        mm = entry.get("match_metrics", {})
+        if not isinstance(mm, dict):
+            mm = {}
+        fit_pct = float(mm.get("overall_fit_percentage", 0))
+        conf    = float(mm.get("confidence_score", 0))
+
+        raw_reason = str(entry.get("suitability_reason", ""))
+        if raw_reason and not raw_reason.startswith("FIT:"):
+            raw_reason = raw_reason[:120].rstrip()
+        reason = raw_reason or f"FIT:{int(fit_pct)} | (no detail)"
+
+        core_alignments    = json.dumps(list(entry.get("core_alignments", [])))
+        technical_gaps     = json.dumps(list(entry.get("technical_gaps", [])))
+        vulnerability_analysis = str(entry.get("vulnerability_analysis", ""))
+
+        # Apply same status mapping as _evaluate_single_job
+        if not is_us_or_canada(location):
+            status_str = "Ineligible (Non-US/Canada)"
+            score_val  = 3
+        else:
+            status_str = f"Eligible (Priority {score_val})" if score_val < 3 else "Ineligible"
+
+        cursor.execute("""
+            UPDATE jobs
+            SET status=?, score=?, suitability_reason=?,
+                core_alignments=?, technical_gaps=?, vulnerability_analysis=?,
+                overall_fit_percentage=?, confidence_score=?,
+                date_evaluated=CURRENT_TIMESTAMP
+            WHERE id=?
+        """, (
+            status_str, score_val, reason,
+            core_alignments, technical_gaps, vulnerability_analysis,
+            fit_pct, conf, db_id,
+        ))
+        conn.commit()
+        print(f"  [IMPORT] [{db_id}] {company} — Score {score_val} ({status_str}) | {reason[:60]}")
+        imported += 1
+
+    conn.close()
+    print(f"\n[IMPORT] Done. Imported: {imported}, Skipped: {skipped}.")
+
+
 def show_status():
     """Display count metrics for jobs stored in the database."""
     if not DB_PATH.exists():
@@ -1181,6 +1367,8 @@ def main():
     parser.add_argument("--priority", type=int, default=1, choices=[1, 2, 3], help="Priority level to list (default 1)")
     parser.add_argument("--id", type=int, help="Job ID to mark as applied")
     parser.add_argument("--dry-run", action="store_true", help="For 'evaluate': scrape job descriptions only, skip DeepSeek LLM calls (validates pipeline)")
+    parser.add_argument("--export-prompts", action="store_true", help="For 'evaluate': scrape pending jobs and export to artifacts/eval_pending.json for offline scoring (no LLM key needed)")
+    parser.add_argument("--import-scores", action="store_true", help="For 'evaluate': import Claude-scored artifacts/eval_scores.json into the database")
     
     args = parser.parse_args()
     
@@ -1198,7 +1386,12 @@ def main():
         if args.action == "ingest":
             run_ingest()
         elif args.action == "evaluate":
-            asyncio.run(run_evaluate(limit=args.limit, dry_run=args.dry_run))
+            if args.export_prompts:
+                asyncio.run(run_export_prompts(limit=args.limit))
+            elif args.import_scores:
+                run_import_scores()
+            else:
+                asyncio.run(run_evaluate(limit=args.limit, dry_run=args.dry_run))
         elif args.action == "status":
             show_status()
         elif args.action == "list":
@@ -1214,7 +1407,8 @@ def main():
             export_db_to_csv()
     finally:
         # Export back to CSV if we ran an action that could modify or display the DB (excluding apply-loop and dry-run)
-        if args.action in ("ingest", "apply", "csv", "status") or (args.action == "evaluate" and not args.dry_run):
+        if args.action in ("ingest", "apply", "csv", "status") or (
+                args.action == "evaluate" and not args.dry_run and not args.export_prompts):
             export_db_to_csv()
             
         # Clean up database file so it doesn't persist on disk

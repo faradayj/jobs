@@ -41,6 +41,7 @@
       "degree_type": "Master's Degree",
       "degree_abbreviation": "MS",
       "degree_search_variants": [
+        "M.S.",
         "MS",
         "Master of Science",
         "Masters",
@@ -70,6 +71,7 @@
       "degree_type": "Bachelor's Degree",
       "degree_abbreviation": "BS",
       "degree_search_variants": [
+        "B.S.",
         "BS",
         "Bachelor of Science",
         "Bachelor's"
@@ -147,6 +149,24 @@
       "description": "Engineered and rigorously tested data science workflows tailored to various industry sectors, enhancing team insights into workstation performance. Conducted extensive benchmarking of workflows by simulating real-world industry use cases using Python and Scikit-Learn, improving efficiency by 20%."
     }
   ],
+  "personal_connections": {
+    "bcbsaz": {
+      "company_aliases": ["blue cross blue shield of arizona", "bcbsaz", "az blue", "blue cross"],
+      "name": "Brandon Tran",
+      "relationship": "Friend",
+      "is_family": false,
+      "works_at_company": true,
+      "referral_source_terms": [
+        "I know someone at the company",
+        "Employee Referral",
+        "Referral",
+        "Friend or Colleague",
+        "Employee",
+        "Word of Mouth"
+      ],
+      "referral_contact": "Brandon Tran"
+    }
+  },
   "job_board_mappings": {
     "previously_applied_amazon": "Yes",
     "previously_employed_amazon": "No",
@@ -236,7 +256,8 @@
     "location_selection_execution_rule": "Single-select location dropdowns — follow this logic in order: (0) REMOTE CHECK: if any dropdown option matches Remote/Virtual/Work-from-Home/Remote-US/Remote-Canada, ALWAYS pick it first regardless of anything else. (1) LADDER SELECTION: determine which ladder to use based on the JOB LISTING ITSELF — if job_listing_locations contains any remote/virtual indicator OR the listing title/type is flagged remote-eligible, use the remote_* ladder; if the listing is strictly onsite, use the onsite_* ladder. Combine this with job country (derived per contextual_citizenship_and_export_rules; default US). This gives four possible ladders: remote_us, onsite_us, remote_canada, onsite_canada. (2) LISTING MATCH: within the chosen ladder, collect dropdown options that fuzzy-match any location in job_listing_locations and pick the highest-ranked matched option. (3) LADDER FALLBACK: if no listing location matched any dropdown option, walk the chosen ladder top-to-bottom and pick the highest-ranked entry whose keywords appear in a dropdown option. Multi-select/checkbox location lists: select ALL available options."
   },
   "compensation_rules": {
-    "baseline_target_pay": "140000",
+    "baseline_target_pay": "120000",
+    "desired_comp_scale_factor": 0.95,
     "range_midpoint_rule": "For desired-salary fields: if job_listing_salary is provided (injected at runtime), use it as the source of truth — dropdown of ranges: pick the option containing or closest to that value; free number field: use its midpoint as a rounded integer. If job_listing_salary is null but the description contains an explicit range, use the range tied to the highest-cost listed location (prefer San Francisco / California tier when multiple shown) and compute the exact min-max midpoint as a rounded integer. If no range is available, use compensation_rules.baseline_target_pay."
   },
   "regulatory_self_identification": {

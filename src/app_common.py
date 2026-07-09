@@ -253,6 +253,27 @@ def fuzzy_pick(opts: list[str], value: str) -> str | None:
     return None
 
 
+def _current_connection() -> dict | None:
+    """Return the personal_connections entry for the current job's tenant, or None."""
+    try:
+        _p = json.loads(PROFILE_SUMMARY)
+    except Exception:
+        _p = {}
+    tenant  = (_p.get("job_tenant") or "").lower()
+    company = (_p.get("job_company") or "").lower()
+    locs    = " ".join(str(l) for l in _p.get("job_listing_locations", [])).lower()
+    conns   = LIBRARY.get("personal_connections", {})
+    # Direct tenant-key match first (fastest, most reliable)
+    if tenant and tenant in conns:
+        return conns[tenant]
+    # Alias match against company/tenant/locations text
+    for c in conns.values():
+        if any(a in company or a in tenant or a in locs
+               for a in c.get("company_aliases", [])):
+            return c
+    return None
+
+
 def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) -> str | None:
     """Return the best library.json-grounded answer for a field, or None if no match.
 
@@ -275,6 +296,8 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
         "preferred geographic", "geographic preference", "location preference",  # App-Q1 text box
         "postgraduate", "graduate degree", "intend to enroll",
         "pursuing a degree", "graduate school",             # postgrad intent
+        "personal relationship",                            # per-company referral answer may change
+        "name or email", "their name or email",             # referral follow-up — pre-filled wrong
     )
     _grad_ctx_override = any(k in section or k in _context_hint_lower for k in
                              ("graduation", "anticipated graduation", "expected graduation", "anticipated"))
@@ -362,6 +385,11 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
         if field.get("isSelectInput"):
             # ── React-Select / Greenhouse combobox fields ──────────────────
             if label_match(label, "how did you hear", "source", "referral", "learn about"):
+                _hconn = _current_connection()
+                if _hconn and _hconn.get("works_at_company"):
+                    _ref_terms = _hconn.get("referral_source_terms",
+                        ["I know someone at the company", "Employee Referral", "Referral"])
+                    return "\n".join(_ref_terms)
                 hear_terms = JBM.get("hear_about_us_fallback_order",
                     ["LinkedIn", "Internet/Online Job Posting", "Job Board", "Other"])
                 return "\n".join(hear_terms)
@@ -430,7 +458,11 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
         if label_match(label, "first name", "given name"):       return PI["first_name"]
         if label_match(label, "last name", "surname", "family name"): return PI["last_name"]
         if label_match(label, "middle name", "middle initial"):  return ""
-        if label_match(label, "email"):                          return PI["email"]
+        if label_match(label, "email") \
+                and not label_match(label, "name or email", "their name or email",
+                                    "name of the employee", "who referred",
+                                    "person you know", "someone you know", "referrer"):
+            return PI["email"]
         if label_match(label, "phone number", "telephone", "cell number", "mobile number", "phone"):
             if label_match(label, "extension", "ext"):           return ""
             return PHONE_DIGITS
@@ -448,6 +480,11 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
             return PI.get("github", "")
         if label_match(label, "salary", "compensation", "pay", "wage", "expected") \
                 and not label_match(label, "open to working", "onsite", "4 days"):
+            try: _ls_ft = int(json.loads(PROFILE_SUMMARY).get("job_listing_salary") or 0)
+            except Exception: _ls_ft = 0
+            _factor_ft = float(COMP.get("desired_comp_scale_factor", 0.95))
+            if _ls_ft:
+                return str(round(_ls_ft * _factor_ft))
             return str(COMP.get("baseline_target_pay", COMP.get("expected_base_salary", "120000")))
 
         if label_match(label, "current company", "current employer", "employer name") \
@@ -458,8 +495,31 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
                 and not field.get("isSelectInput"):
             return PI.get("visa_status", "U.S. Citizen")
 
-        if label_match(label, "name") and "employee" not in label.lower():
+        # Referral follow-up: "who referred you" / "name or email of the employee" etc.
+        if label_match(label, "who referred", "person you know", "someone you know", "referrer",
+                       "name or email", "their name or email", "name of the employee", "employee name") \
+                or (label_match(label, "referral") and label_match(label, "name", "email", "contact")):
+            _rconn = _current_connection()
+            if _rconn:
+                return _rconn.get("referral_contact") or _rconn.get("name", "")
+            return ""
+
+        if label_match(label, "name") and "employee" not in label.lower() \
+                and not label_match(label, "provide the name", "name of the",
+                                    "name and relationship", "organization", "relationship",
+                                    "who referred", "person you know", "referrer",
+                                    "name or email", "employee name"):
             return f"{PI['first_name']} {PI['last_name']}"
+
+        # Follow-up text field after a "personal relationship" Yes answer: provide name/relationship.
+        if label_match(label, "provide the name", "name of the person", "name and relationship",
+                       "their name", "list the name", "provide their name"):
+            conn = _current_connection()
+            if conn:
+                if label_match(label, "relationship"):
+                    return f"{conn['name']} ({conn['relationship']})"
+                return conn["name"]
+            return ""  # no connection for this company — field shouldn't appear (we answered No)
 
         # STEP 4: Preferred geographic/location TEXT field (App-Q1 textarea; NOT the App-Q2 dropdowns).
         # Use the LISTING's primary location, not the candidate's home city.
@@ -605,6 +665,13 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
 
         if label_match(label, "how did you hear", "learn about") \
                 or (label_match(label, "source", "referral") and len(label) < 80):
+            _hconn = _current_connection()
+            if _hconn and _hconn.get("works_at_company"):
+                for _rterm in _hconn.get("referral_source_terms",
+                        ["I know someone at the company", "Employee Referral", "Referral"]):
+                    _rpick = fuzzy_pick(opts, _rterm)
+                    if _rpick: return _rpick
+                # no referral-style option present — fall through to LinkedIn ladder
             hear_order = JBM.get("hear_about_us_fallback_order",
                 ["LinkedIn", "Internet/Online Job Posting", "Job Board", "Other"])
             for term in hear_order:
@@ -629,7 +696,10 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
             return fuzzy_pick(opts, PI["state"]) or opts[0]
 
         if label_match(label, "phone", "device type", "phone type"):
-            return fuzzy_pick(opts, "Mobile") or opts[0]
+            return (fuzzy_pick(opts, "Mobile") or fuzzy_pick(opts, "Personal Cell")
+                    or fuzzy_pick(opts, "Cell") or fuzzy_pick(opts, "Mobile Phone")
+                    or fuzzy_pick(opts, "Work Cell") or fuzzy_pick(opts, "Home")
+                    or next((o for o in opts if o.lower() != "select one"), None))
 
         if label_match(label, "suffix", "salutation", "prefix"):
             return ""
@@ -655,11 +725,11 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
                        "responsibilities: are you now", "government responsibilities"):
             return fuzzy_pick(opts, "No") or opts[0]
 
-        # STEP 7: Non-compete / previous employment restrictions (added "non-solicitation")
-        if label_match(label, "non-disclosure", "non-compete", "non compete",
-                       "previously worked", "prior employ", "work for us before",
+        # STEP 7: Non-compete / previous employment restrictions (hyphenated AND un-hyphenated forms)
+        if label_match(label, "non-disclosure", "nondisclosure", "non-compete", "noncompete",
+                       "non compete", "previously worked", "prior employ", "work for us before",
                        "worked here", "worked for", "restrictive covenant",
-                       "non-solicitation"):
+                       "non-solicitation", "nonsolicitation"):
             return fuzzy_pick(opts, "No") or opts[0]
 
         if label_match(label, "applied", "previously applied", "applied to", "applied before",
@@ -674,6 +744,43 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
             return fuzzy_pick(opts, "No") or opts[0]
 
         if label_match(label, "terminat", "asked to resign", "discharged", "dismissed"):
+            return fuzzy_pick(opts, "No") or opts[0]
+
+        # Felony / criminal history
+        if label_match(label, "felony", "convicted", "criminal", "misdemeanor", "crime",
+                       "charged", "indicted", "injunction", "judgment", "decree"):
+            return fuzzy_pick(opts, "No") or opts[0]
+
+        # Officer / board-member / incorporator status — Josh is not an officer of any org
+        if label_match(label, "officer or board", "board member", "incorporator",
+                       "serve as an officer", "serve as a board"):
+            return fuzzy_pick(opts, "No") or opts[0]
+
+        # Personal-relationship — split by question type:
+        # "works FOR <this company>" (no vendor/conflict signal) → Yes if connection here; else No.
+        # "vendor/competitor/conflict" or generic personal-relationship → always No.
+        _has_vendor_signal = label_match(label, "vendor", "competitor", "subcontractor",
+                                         "doing business with", "conflict of interest",
+                                         "contractor", "broker", "agent")
+        if label_match(label, "personal relationship") and not _has_vendor_signal \
+                and label_match(label, "work for", "works for", "employed by",
+                                "employee of", "work at", "work for us"):
+            conn = _current_connection()
+            return fuzzy_pick(opts, "Yes") if (conn and conn.get("works_at_company")) \
+                   else (fuzzy_pick(opts, "No") or opts[0])
+
+        if label_match(label, "personal relationship", "conflict of interest",
+                       "vendor", "competitor", "subcontractor", "doing business with"):
+            return fuzzy_pick(opts, "No") or opts[0]
+
+        # Debarment / exclusion from federal health-care programs
+        if label_match(label, "excluded", "ineligible to perform", "federal health care",
+                       "federal health-care", "excluded or otherwise ineligible"):
+            return fuzzy_pick(opts, "No") or opts[0]
+
+        # Second job / outside employment
+        if label_match(label, "second job", "outside employment", "other employment",
+                       "employment other than"):
             return fuzzy_pick(opts, "No") or opts[0]
 
         if label_match(label, "background check", "drug test", "drug screen", "acknowledgment",
@@ -694,10 +801,13 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
 
         # STEP 10: Compensation — updated comp read + range_score guard + fallback
         if label_match(label, "compensation", "salary", "pay", "desired"):
+            try: _ls_d = int(json.loads(PROFILE_SUMMARY).get("job_listing_salary") or 0)
+            except Exception: _ls_d = 0
+            _factor_d = float(COMP.get("desired_comp_scale_factor", 0.95))
             comp = COMP.get("baseline_target_pay", COMP.get("expected_base_salary", 0))
             comp_n = 0
             try:
-                comp_n = int(str(comp).replace(",","").replace("$","").strip())
+                comp_n = round(_ls_d * _factor_d) if _ls_d else int(str(comp).replace(",","").replace("$","").strip())
             except (ValueError, TypeError):
                 pass
             if comp_n and opts:
@@ -803,7 +913,12 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
             data = WE[0] if ("work" in section or "experience" in section) else (EDU[0] if EDU else None)
             if data: return fuzzy_pick(opts, data.get("end_month","")) or opts[0]
 
-        if label_match(label, "current", "present", "still work", "still attend"):
+        # "current"/"present"/"still work" — ONLY fire in a work/edu/experience section context
+        # to avoid matching unrelated labels that happen to contain "currently" (e.g. "Do you
+        # currently serve as an officer or board member…")
+        if label_match(label, "current", "present", "still work", "still attend") and \
+                any(k in section for k in ("work", "experience", "education", "school",
+                                           "employment", "position", "job")):
             data = WE[0] if ("work" in section or "experience" in section) else (EDU[0] if EDU else None)
             if data:
                 is_current = data.get("current_status","").lower() in ("currently work here","still attending")

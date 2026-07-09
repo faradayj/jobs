@@ -970,6 +970,8 @@ async def exec_checkbox(page: Page, field: dict, value: str):
 
 async def execute_answer(page: Page, field: dict, value: str):
     if not value: return
+    if any(k in field.get("label","").lower() for k in ("upload a file", "5mb", "attach")):
+        return  # never click file-upload buttons — resume already uploaded via input[type=file]
     tag = field.get("tag",""); ftype = field.get("type","")
     role = field.get("role","")
     try:
@@ -1115,6 +1117,9 @@ async def save_and_continue_with_report(page: Page):
 
 async def prefetch_options(page: Page, fields: list[dict]):
     for f in fields:
+        _lbl = f.get("label", "").lower()
+        if any(k in _lbl for k in ("upload a file", "5mb", "attach", "upload")):
+            continue  # file-upload buttons open native OS chooser — nothing to prefetch
         if f["tag"] == "button" and not f["options"]:
             fid = f.get("id","")
             faid = f.get("auto","")
@@ -1629,11 +1634,11 @@ SECTION_SPEC = {
     "work": {
         "anchor_kws": ("job title",),
         "stop_kws": ("school or university", "school", "university", "degree",
-                     "type to add skills", "language", "website"),
+                     "type to add skills", "language", "website", "upload a file"),
     },
     "edu": {
         "anchor_kws": ("school or university", "school", "university"),
-        "stop_kws": ("type to add skills", "language", "website", "job title"),
+        "stop_kws": ("type to add skills", "language", "website", "job title", "upload a file"),
     },
     "lang": {
         "anchor_kws": (),
@@ -2813,11 +2818,15 @@ async def handle_self_identify(page: Page) -> bool:
             const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
             if (setter) setter.call(e, '{val}');
             else e.value = '{val}';
-            e.dispatchEvent(new Event('input',  {{bubbles:true}}));
+            e.dispatchEvent(new InputEvent('input',  {{bubbles:true, data:'{val}', inputType:'insertText'}}));
             e.dispatchEvent(new Event('change', {{bubbles:true}}));
+            e.dispatchEvent(new Event('blur',   {{bubbles:true}}));
             return true;
         }}""")
         if filled:
+            # Tab away to commit React state after each spinbutton segment
+            await page.keyboard.press("Tab")
+            await page.wait_for_timeout(200)
             print(f"    ✓ date {sfx} = {val!r}")
 
     # smart_fill_page handles disability radio + language dropdown.
@@ -2950,6 +2959,14 @@ async def main(job_url: str, headed: bool = False):
             "--disable-blink-features=AutomationControlled",
         ])
 
+        # Safety net: intercept any stray native file chooser (headed mode) so Finder never blocks.
+        # The resume is already uploaded via input[type='file'] set_input_files — this just satisfies
+        # any dialog that somehow opens and silently closes it.
+        async def _on_filechooser(fc):
+            try: await fc.set_files(RESUME_PATH)
+            except Exception: pass
+        page.on("filechooser", _on_filechooser)
+
         print("[NAV] Loading job listing...")
         try:
             await page.goto(job_url, wait_until="domcontentloaded", timeout=30000)
@@ -2967,11 +2984,15 @@ async def main(job_url: str, headed: bool = False):
             listing_salary = str(LIBRARY.get("compensation_rules", {}).get("baseline_target_pay", "140000"))
             print(f"[NAV] No salary range found in listing — using baseline: {listing_salary}")
         listing_locations = await _scrape_listing_locations(page, job_url)
-        # Update PROFILE_SUMMARY with salary, locations, and today's date
+        # Derive the Workday tenant slug (e.g. "bcbsaz") for per-company rule matching.
+        _tenant_m = re.match(r'https://([^.]+)\.wd\d+\.myworkdayjobs\.com', job_url)
+        listing_tenant = _tenant_m.group(1).lower() if _tenant_m else ""
+        # Update PROFILE_SUMMARY with salary, locations, tenant, and today's date
         _mod = sys.modules[__name__]
         _profile_data = json.loads(_mod.PROFILE_SUMMARY)
         _profile_data["job_listing_salary"] = int(listing_salary)
         _profile_data["job_listing_locations"] = listing_locations
+        _profile_data["job_tenant"] = listing_tenant
         _profile_data["today"] = datetime.date.today().isoformat()
         _mod.PROFILE_SUMMARY = json.dumps(_profile_data, indent=2)
         # Mirror into app_common so rule_based_answer (which reads app_common.PROFILE_SUMMARY)
