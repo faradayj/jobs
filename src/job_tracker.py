@@ -131,7 +131,8 @@ SCHEMA_SQL = """
         overall_fit_percentage REAL,
         confidence_score REAL,
         date_added DATETIME DEFAULT CURRENT_TIMESTAMP,
-        date_evaluated DATETIME
+        date_evaluated DATETIME,
+        date_applied DATETIME
     )
 """
 
@@ -206,6 +207,7 @@ def import_csv_to_db():
             
             date_added = get_val("Date Added")
             date_evaluated = get_val("Date Evaluated")
+            date_applied = get_val("Date Applied")
             suitability_reason = get_val("Suitability Reason")
             apply_url = get_val("Apply URL")
             
@@ -238,12 +240,13 @@ def import_csv_to_db():
                     id, company, role, location, apply_url, category, status, score,
                     suitability_reason, job_description, core_alignments, technical_gaps,
                     vulnerability_analysis, overall_fit_percentage, confidence_score,
-                    date_added, date_evaluated
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    date_added, date_evaluated, date_applied
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 job_id, company, role, location, apply_url, category, status, score,
                 suitability_reason, job_description, core_alignments, technical_gaps,
-                vulnerability_analysis, overall_fit, confidence, date_added, date_evaluated
+                vulnerability_analysis, overall_fit, confidence, date_added, date_evaluated,
+                date_applied
             ))
             
     conn.commit()
@@ -507,6 +510,7 @@ async def fetch_job_description(apply_url):
     async with async_playwright() as p:
         launch_kwargs = dict(
             headless=True,
+            timeout=60000,  # 60 s max to launch — default 180 s was causing hung-Chrome crashes
             args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
         )
         if chrome_path:
@@ -744,7 +748,7 @@ def run_ingest():
     
     print("[*] Fetching latest jobs list from Simplify repository...")
     try:
-        resp = requests.get(README_URL, timeout=15)
+        resp = requests.get(README_URL, timeout=15, verify=False)
         resp.raise_for_status()
         content = resp.text
     except Exception as e:
@@ -1007,7 +1011,15 @@ async def run_export_prompts(limit: int = -1):
     for job in pending_jobs:
         job_id, company, role, location, apply_url = job
         print(f"  Scraping [{job_id}] {company} — {role}...")
-        job_desc = await _scrape_job_description(apply_url)
+        try:
+            job_desc = await _scrape_job_description(apply_url)
+        except Exception as _scrape_exc:
+            print(f"    [ERROR] Scrape raised exception — marking Fetch Failed. {_scrape_exc!s:.120}")
+            cursor.execute(
+                "UPDATE jobs SET status='Fetch Failed / Manual Review' WHERE id=?", (job_id,)
+            )
+            conn.commit()
+            continue
 
         if not job_desc or len(job_desc) < 300:
             is_expired = job_desc and any(t in job_desc.lower() for t in EXPIRED_INDICATORS)
@@ -1191,27 +1203,117 @@ def list_priority_jobs(priority=1):
         print("-" * 60)
     conn.close()
 
-def mark_applied(job_id):
-    """Manually mark a job as Applied in the database."""
+def mark_applied(job_id, date_str=None):
+    """Manually mark a job as Applied in the database (keyed by numeric id).
+
+    date_str: YYYY-MM-DD string; defaults to today if omitted.
+    """
+    import datetime as _dt
+    if date_str is None:
+        date_str = _dt.date.today().isoformat()
     if not DB_PATH.exists():
         print("[*] Database file does not exist.")
         return
-        
+
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
+
     cursor.execute("SELECT company, role FROM jobs WHERE id = ?", (job_id,))
     job = cursor.fetchone()
     if not job:
         print(f"[ERROR] Job with ID {job_id} not found.")
         conn.close()
         return
-        
-    cursor.execute("UPDATE jobs SET status = 'Applied' WHERE id = ?", (job_id,))
+
+    cursor.execute(
+        "UPDATE jobs SET status = 'Applied', date_applied = ? WHERE id = ?",
+        (date_str, job_id)
+    )
     conn.commit()
     conn.close()
-    print(f"[+] Successfully marked {job[0]} - {job[1]} as 'Applied'.")
+    print(f"[+] Successfully marked {job[0]} - {job[1]} as 'Applied' ({date_str}).")
     export_db_to_csv()
+
+
+def set_status_by_url(url, status, date_applied=None):
+    """Set a job's Status (and optionally Date Applied) directly in the CSV (no DB needed).
+
+    Used by app_workday.py after submit (Applied) or on dead-listing detection (Closed (Expired)).
+    Finds the row via clean_url normalization + exact-match fallback. The Date Applied column
+    is injected into the CSV if it predates that feature.
+
+    Returns (company, role) on success, None if URL not found.
+    """
+    import csv as _csv
+
+    csv_path = DATA_DIR / "jobs_tracker.csv"
+    if not csv_path.exists():
+        print(f"  [tracker] CSV not found at {csv_path} — cannot update status.")
+        return None
+
+    target = clean_url(url)
+
+    with open(csv_path, "r", newline="", encoding="utf-8") as f:
+        reader = _csv.DictReader(f)
+        fieldnames = list(reader.fieldnames or [])
+        rows = list(reader)
+
+    # Inject "Date Applied" column if the CSV predates this feature.
+    if "Date Applied" not in fieldnames:
+        try:
+            idx = fieldnames.index("Date Evaluated") + 1
+        except ValueError:
+            idx = len(fieldnames) - 1
+        fieldnames.insert(idx, "Date Applied")
+        for r in rows:
+            r.setdefault("Date Applied", "")
+
+    matched = None
+    for row in rows:
+        row_url = clean_url(row.get("Apply URL", ""))
+        if row_url == target or row.get("Apply URL", "") == url:
+            row["Status"] = status
+            if date_applied is not None:
+                row["Date Applied"] = date_applied
+            matched = (row.get("Company", ""), row.get("Role", ""))
+            break
+
+    if matched is None:
+        print(f"  [tracker] ⚠ URL not found in tracker — status not updated.\n"
+              f"           URL: {url}")
+        return None
+
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = _csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return matched
+
+
+def mark_applied_by_url(url, date_str=None):
+    """Mark a job Applied + record the applied date in the CSV. No DB needed.
+
+    Intended for use by app_workday.py after a successful submit.
+    """
+    import datetime as _dt
+    if date_str is None:
+        date_str = _dt.date.today().isoformat()
+    matched = set_status_by_url(url, "Applied", date_applied=date_str)
+    if matched:
+        print(f"  [tracker] ✓ Marked {matched[0]} — {matched[1]} as Applied ({date_str}).")
+    return matched
+
+
+def mark_closed_expired_by_url(url):
+    """Mark a job Closed (Expired) in the CSV. No DB needed.
+
+    Intended for use by app_workday.py when a dead/expired listing is detected.
+    """
+    matched = set_status_by_url(url, "Closed (Expired)")
+    if matched:
+        print(f"  [tracker] ✓ Marked {matched[0]} — {matched[1]} as Closed (Expired).")
+    return matched
 
 def detect_applicator(url: str) -> str | None:
     """Return the applicator script path for a given job URL, or None if unsupported."""
@@ -1298,7 +1400,7 @@ def export_db_to_csv():
         cursor.execute("""
             SELECT apply_url, id, company, role, location, category, status, score,
                    overall_fit_percentage, confidence_score, date_added, date_evaluated,
-                   suitability_reason
+                   date_applied, suitability_reason
             FROM jobs
             ORDER BY score ASC, overall_fit_percentage DESC, date_added DESC
         """)
@@ -1307,7 +1409,7 @@ def export_db_to_csv():
         csv_headers = [
             "Apply URL", "ID", "Company", "Role", "Location", "Category", "Status", "Score",
             "Overall Fit %", "Confidence Score", "Date Added", "Date Evaluated",
-            "Suitability Reason",
+            "Date Applied", "Suitability Reason",
         ]
         
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
@@ -1360,6 +1462,42 @@ def export_db_to_csv():
 
 # --- 6. CLI Entry Point ---
 
+def _reset_for_recheck(scope: str):
+    """Reset already-evaluated jobs to Pending Evaluation so they get re-scraped + re-scored.
+
+    scope:
+      p1p2     – Eligible (Priority 1) and Eligible (Priority 2) only
+      eligible – all Eligible% rows
+      all      – Eligible% + Ineligible + Ineligible (Non-US/Canada)
+
+    Never touches Applied, Closed, or Closed (Expired) rows.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    if scope == "p1p2":
+        cursor.execute(
+            "UPDATE jobs SET status='Pending Evaluation', score=NULL "
+            "WHERE status IN ('Eligible (Priority 1)', 'Eligible (Priority 2)')"
+        )
+    elif scope == "eligible":
+        cursor.execute(
+            "UPDATE jobs SET status='Pending Evaluation', score=NULL "
+            "WHERE status LIKE 'Eligible%'"
+        )
+    elif scope == "all":
+        cursor.execute(
+            "UPDATE jobs SET status='Pending Evaluation', score=NULL "
+            "WHERE status LIKE 'Eligible%' "
+            "   OR status IN ('Ineligible', 'Ineligible (Non-US/Canada)')"
+        )
+
+    n = cursor.rowcount
+    conn.commit()
+    conn.close()
+    print(f"[RECHECK] Reset {n} jobs to 'Pending Evaluation' (scope={scope!r}).")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Simplify Jobs Aggregator & Match Tracker")
     parser.add_argument("action", choices=["ingest", "evaluate", "status", "list", "apply", "apply-loop", "csv"], help="Action to perform")
@@ -1369,7 +1507,12 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="For 'evaluate': scrape job descriptions only, skip DeepSeek LLM calls (validates pipeline)")
     parser.add_argument("--export-prompts", action="store_true", help="For 'evaluate': scrape pending jobs and export to artifacts/eval_pending.json for offline scoring (no LLM key needed)")
     parser.add_argument("--import-scores", action="store_true", help="For 'evaluate': import Claude-scored artifacts/eval_scores.json into the database")
-    
+    parser.add_argument("--recheck", choices=["p1p2", "eligible", "all"],
+                        help="For 'evaluate --export-prompts': reset already-scored jobs back to "
+                             "Pending Evaluation so they are re-scraped and re-scored. "
+                             "p1p2 = Priority 1+2 only; eligible = all Eligible rows; "
+                             "all = Eligible + Ineligible (never touches Applied or Closed).")
+
     args = parser.parse_args()
     
     # 1. Start from a fresh database by importing CSV
@@ -1387,6 +1530,8 @@ def main():
             run_ingest()
         elif args.action == "evaluate":
             if args.export_prompts:
+                if args.recheck:
+                    _reset_for_recheck(args.recheck)
                 asyncio.run(run_export_prompts(limit=args.limit))
             elif args.import_scores:
                 run_import_scores()

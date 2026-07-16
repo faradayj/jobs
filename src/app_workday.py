@@ -2849,7 +2849,7 @@ async def handle_self_identify(page: Page) -> bool:
 RUN_REPORT: dict = {
     "job_url": "",
     "started": "",
-    "final": "unknown",   # "complete" | "review" | "blocked" | "error"
+    "final": "unknown",   # "complete" | "review" | "blocked" | "error" | "listing_dead"
     "pages": [],
 }
 
@@ -2882,7 +2882,14 @@ async def _scrape_listing_locations(page: Page, job_url: str) -> list[str]:
     Returns a list like ['California - San Francisco', 'Washington - Seattle'].
     """
     # ── CXS JSON (preferred) ──────────────────────────────────────────────────
-    m = re.match(r'https://([^.]+)\.(wd\d+)\.myworkdayjobs\.com/([^/]+)/job/(.+)', job_url)
+    # Pattern: /en-CA/SiteName/job/... OR /SiteName/job/...
+    # The optional locale prefix (e.g. "en-CA", "en-US") is NOT the site name.
+    m = re.match(
+        r'https://([^.]+)\.(wd\d+)\.myworkdayjobs\.com/'
+        r'(?:[a-z]{2}-[A-Z]{2}/)?'   # optional locale prefix like en-CA, en-US
+        r'([^/]+)/job/(.+)',
+        job_url
+    )
     if m:
         tenant, wdn, site, ext_path = m.groups()
         cxs_url = f"https://{tenant}.{wdn}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/job/{ext_path}"
@@ -2976,6 +2983,34 @@ async def main(job_url: str, headed: bool = False):
             raise
         await page.wait_for_timeout(3000)
 
+        # ── Dead-listing early detection ──────────────────────────────────────
+        # Check immediately after page load — before burning 40+ seconds on Apply selectors.
+        async def _check_listing_dead() -> str | None:
+            try:
+                body = (await page.evaluate("() => document.body.innerText")).lower()
+            except Exception:
+                return None
+            from job_tracker import EXPIRED_INDICATORS
+            for phrase in EXPIRED_INDICATORS:
+                if phrase in body:
+                    return phrase
+            return None
+
+        _dead_hint = await _check_listing_dead()
+        if _dead_hint:
+            print(f"[NAV] Listing is dead/expired ({_dead_hint!r}) — exiting early.")
+            await page.screenshot(path=str(ARTIFACTS / "listing_dead.png"))
+            RUN_REPORT["final"] = "listing_dead"
+            _report_page(0, "Listing Dead", "listing_dead", screenshot="listing_dead.png")
+            try:
+                from job_tracker import mark_closed_expired_by_url
+                mark_closed_expired_by_url(job_url)
+            except Exception as _e:
+                print(f"  [tracker] auto-close failed (non-fatal): {_e}")
+            _write_report()
+            await browser.close()
+            return
+
         # Scrape salary + locations from the listing page; inject into PROFILE_SUMMARY
         listing_salary = await _scrape_listing_salary(page)
         if listing_salary:
@@ -3019,7 +3054,7 @@ async def main(job_url: str, headed: bool = False):
         for sel in APPLY_SELECTORS:
             try:
                 loc = page.locator(sel).first
-                await loc.wait_for(state="visible", timeout=8000)
+                await loc.wait_for(state="visible", timeout=2500)
                 # If it's a link with href, navigate directly (avoids JS auth issues)
                 href = await loc.get_attribute("href")
                 if href and href.startswith("http"):
@@ -3032,6 +3067,22 @@ async def main(job_url: str, headed: bool = False):
             except Exception:
                 continue
         if not apply_clicked:
+            # Second dead-listing check — some pages render skeleton HTML that passes the
+            # first check but have no Apply button (e.g. a redirect to the careers search page).
+            _dead_hint2 = await _check_listing_dead()
+            if _dead_hint2:
+                print(f"[NAV] No Apply button + dead-listing signal ({_dead_hint2!r}) — exiting early.")
+                await page.screenshot(path=str(ARTIFACTS / "listing_dead.png"))
+                RUN_REPORT["final"] = "listing_dead"
+                _report_page(0, "Listing Dead", "listing_dead", screenshot="listing_dead.png")
+                try:
+                    from job_tracker import mark_closed_expired_by_url
+                    mark_closed_expired_by_url(job_url)
+                except Exception as _e:
+                    print(f"  [tracker] auto-close failed (non-fatal): {_e}")
+                _write_report()
+                await browser.close()
+                return
             print("  [NAV] No Apply button found — trying JS fallback")
             await page.evaluate("""() => {
                 const btn = document.querySelector('[data-automation-id="adventureButton"]') ||
@@ -3179,6 +3230,11 @@ async def main(job_url: str, headed: bool = False):
                         await save_and_continue(page)
                         print("  ✓ Submitted!")
                         RUN_REPORT["final"] = "complete"
+                        try:
+                            from job_tracker import mark_applied_by_url
+                            mark_applied_by_url(job_url)
+                        except Exception as _e:
+                            print(f"  [tracker] mark-applied failed (non-fatal): {_e}")
                     except (EOFError, KeyboardInterrupt):
                         print(f"  ⚠️  Non-interactive mode — NOT submitting. Review at {review_shot}")
                         if headed:

@@ -350,6 +350,9 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
             return "false"
         if label_match(label, "none of the above"):
             return "true"
+        # "N/A" checkbox on event-attendance lists — check it when label is exactly N/A
+        if label.strip().upper() == "N/A":
+            return "true"
         if label_match(label, "procuring contracting officer", "source selection",
                        "program manager", "administrative contracting",
                        "award a contract", "establish overhead", "approve issuance",
@@ -358,6 +361,14 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
                        "military officer", "official involved with contracts",
                        "otherwise involved with snc", "otherwise involved"):
             return "false"
+        # "I am not a member of a technical club or project" — check it (opt-out option)
+        if label_match(label, "not a member of a technical club", "i am not a member"):
+            return "true"
+
+        # Location checkbox group "Available for Any" — always opt in to all locations
+        if label.strip().lower() == "available for any":
+            return "true"
+
         _PREFER_NOT_KWS = ("don't wish", "don't want to answer", "prefer not",
                            "decline to", "do not want to answer", "i do not want to answer")
         prefer_not = DISABILITY_ANSWER in ("prefer_not", "no_answer", "decline")
@@ -600,10 +611,127 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
             if label_match(label, "end year", "graduation year"):
                 return EDU[0].get("end_year","") if EDU else ""
 
+        # Degree Major / Minor — fire even outside an "education" section context
+        if label_match(label, "degree major", "degree minor"):
+            if label_match(label, "minor"):
+                return EDU[0].get("minor","") if EDU else ""
+            return EDU[0]["major_variants"][0] if EDU else ""
+
+        # Graduation Year — label-keyed (outside education section context)
+        if label_match(label, "graduation year"):
+            school = next((e for e in EDU if "attending" in e.get("current_status","").lower()), None)
+            if school: return str(school.get("end_year",""))
+            return str(EDU[0].get("end_year","")) if EDU else ""
+
+        # Blue Origin: "why interested in Blue Origin" short-answer
+        if label_match(label, "interested in blue origin", "why you are interested in blue origin",
+                       "why are you interested in blue origin"):
+            return (
+                "My current work at BILL involves building production ML pipelines that process "
+                "hundreds of thousands of payment events with near-zero tolerance for silent "
+                "errors — the kind of engineering discipline that spaceflight demands at a "
+                "fundamentally higher level. My UCSD research on scalable graph processing for "
+                "chip-design with Qualcomm reinforced that conviction: optimizing systems under "
+                "hard resource constraints is the most interesting class of engineering problems. "
+                "Blue Origin sits at that intersection of rigor and mission, and I want to apply "
+                "the same standard of correctness I've built in production fraud systems to "
+                "software that puts people in space."
+            )
+
+        # Blue Origin: leadership principle essay
+        if label_match(label, "embrace team blue", "earn the trust of others",
+                       "practice humility", "leadership principle"):
+            return (
+                "I resonate most with Earn the Trust of Others. At BILL, I discovered a "
+                "portfolio-wide pipeline bug that had silently corrupted data for 411,000 "
+                "payment events across a six-month window. The easy path would have been "
+                "to quietly fix it and move on; instead I documented the full scope of "
+                "impact, presented it to the team, and drove a coordinated remediation so "
+                "that the affected fraud-detection rules could be cleanly re-tuned from "
+                "accurate baselines. Surfacing an uncomfortable truth proactively — and "
+                "owning the downstream work it created — earned trust with stakeholders "
+                "and set a standard for how we handle data integrity issues."
+            )
+
+        # Blue Origin / technical project description
+        if label_match(label, "hands-on technical project", "technical club",
+                       "rocketry", "research in which you participated",
+                       "your role, contributions and the skills"):
+            return (
+                "For my UCSD capstone in collaboration with Qualcomm, I built a graph-ML "
+                "pipeline to predict chip-design congestion using the DE-HNN architecture. "
+                "I converted six production netlists (460k–920k nodes each) into bipartite "
+                "graphs and engineered spectral and structural node features in Python with "
+                "NetworkX, then trained and optimized DE-HNN models in PyTorch with CUDA. "
+                "My contributions spanned the full pipeline: graph construction, feature "
+                "engineering, model training, and evaluation. The final system achieved an "
+                "89.3% reduction in training runtime and a 38.8% reduction in GPU memory "
+                "usage compared to the baseline, at a roughly 6% average performance trade-off "
+                "— a result that made the approach viable for large-scale production chip design."
+            )
+
+        # Blue Origin: technical skills/experiences for the role
+        if label_match(label, "technical skills/experiences", "skills/experiences do you hope",
+                       "skills or experiences do you hope", "hope to utilize for this position"):
+            return (
+                "I want to bring my production ML and data-pipeline experience to high-reliability "
+                "software. At BILL I've built end-to-end AWS SageMaker batch pipelines, tuned "
+                "optimization algorithms with Optuna, and applied graph analytics with NetworkX at "
+                "production scale. My capstone work added PyTorch and CUDA-accelerated graph "
+                "processing to that toolkit. I'm proficient in Python, SQL, and Java, with working "
+                "knowledge of C and C++. The skills I most want to deepen at Blue Origin are "
+                "systems-level reliability engineering and applying the same rigorous correctness "
+                "standards I've built in fraud-detection software to mission-critical embedded and "
+                "ground-systems contexts."
+            )
+
+        # Blue Origin: primary role preference
+        if label_match(label, "primary role preference", "role preference"):
+            return "Software Development / Backend Systems"
+
+        # "If you responded Yes above, please elaborate below." — honors elaboration
+        if label_match(label, "if you responded yes above, please elaborate",
+                       "responded yes above"):
+            return (
+                "I received the Shore Scholarship at UC San Diego, awarded for academic merit. "
+                "In high school I earned National AP Scholar recognition, which is granted to "
+                "students who score 4 or higher on eight or more AP exams."
+            )
+
+        # Tool/equipment experience (CNC, drill press, 3D printer etc.) — check BEFORE
+        # the coding-languages rule because "tool experience" label also mentions expertise level
+        if label_match(label, "relevant tool experience for this position",
+                       "cnc, drill press", "drill press, mill", "3d printer") and not label_match(
+                       label, "software", "scripting", "coding"):
+            return "No hands-on manufacturing tool experience; primarily software-focused background."
+
+        # Software/coding languages + level of expertise
+        if label_match(label, "software and scripting", "coding languages you regularly use",
+                       "scripting/coding languages"):
+            return (
+                "Python (Advanced), C++ (Intermediate), SQL (Intermediate), "
+                "Java (Intermediate), Bash (Intermediate), JavaScript (Beginner)"
+            )
+
+        # Technical club involvement detail — required even when "not a member" is checked
+        if label_match(label, "involved in a technical project or team listed above",
+                       "information about your involvement", "dates of involvement"):
+            return "N/A — not currently a member of a technical club or project team."
+
+        # Conditional "Other" text box revealed after selecting "Other" in university dropdown.
+        # The label is exactly "Other" with no other context — fill with the full institution name.
+        if label.strip().lower() == "other" and ftype in ("text", "textarea", ""):
+            school = next((e for e in EDU if "attending" in e.get("current_status","").lower()),
+                          EDU[0] if EDU else None)
+            if school:
+                variants = school.get("institution_variants", [])
+                return variants[0] if variants else school.get("institution", "")
+            return ""
+
         return None
 
     # ── Button dropdown / native select ──────────────────────────────────────
-    if tag in ("button", "select") or ftype in ("select-one", "select"):
+    if tag in ("button", "select") or ftype in ("button", "select-one", "select"):
         if not opts:
             return None
 
@@ -615,15 +743,142 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
             return fuzzy_pick(opts, "U.S. Citizen") or next(
                 (o for o in opts if "citizen" in o.lower() and "select" not in o.lower()), None)
 
-        if label_match(label, "18 years of age", "18 years old", "at least 18", "18 years or older",
-                       "years of age or older", "at least 18 years"):
+        # ── US Citizen / security-clearance questions ────────────────────────────
+        # "Are you a U.S. Citizen?" (8 USC 1324b / government contractor access)
+        # These labels are often very long; check for key phrase fragments.
+        if label_match(label, "are you a u.s. citizen", "are you a us citizen",
+                       "1324b", "u.s. citizen", "us citizen"):
             return fuzzy_pick(opts, "Yes") or opts[0]
+
+        # "Would you have the ability to obtain and maintain a security clearance?"
+        # Josh has no active clearance but is eligible (US citizen, no disqualifying factors).
+        if label_match(label, "obtain and maintain a security clearance",
+                       "ability to obtain", "obtain a security clearance"):
+            return fuzzy_pick(opts, "Yes") or opts[0]
+
+        # "Do you currently or in the past have held a security clearance?"
+        # No active or past clearance.
+        if label_match(label, "currently or in the past have held",
+                       "have held a security clearance",
+                       "currently hold a security clearance",
+                       "held a security clearance",
+                       "do you currently hold",
+                       "do you have an active clearance",
+                       "active clearance",
+                       "active security clearance"):
+            return fuzzy_pick(opts, "No") or opts[0]
+
+        if label_match(label, "18 years of age", "18 years old", "at least 18", "18 years or older",
+                       "years of age or older", "at least 18 years", "18 or over", "age 18"):
+            return fuzzy_pick(opts, "Yes") or opts[0]
+
+        # "Are you currently in school or recently graduated ... seeking full time employment?"
+        if label_match(label, "currently in school or recently graduated",
+                       "recently graduated", "seeking full time employment"):
+            _is_student = any("attending" in e.get("current_status","").lower() for e in EDU)
+            return fuzzy_pick(opts, "Yes" if _is_student else "No") or opts[0]
+
+        # "Are you a former [company] intern?" — No
+        if label_match(label, "former", "intern") and label_match(label, "intern"):
+            return fuzzy_pick(opts, "No") or opts[0]
+
+        # "university award", "honors upon graduation", "Summa / Magna Cum Laude" — check GPA
+        if label_match(label, "university award", "honors upon graduation",
+                       "summa", "magna cum laude", "departmental honors", "college honors"):
+            school = next((e for e in EDU if "attending" in e.get("current_status","").lower()),
+                          EDU[0] if EDU else None)
+            if school:
+                try:
+                    _gpa = float(str(school.get("gpa","0")).replace(",","") or "0")
+                except ValueError:
+                    _gpa = 0.0
+                return fuzzy_pick(opts, "Yes" if _gpa >= 3.5 else "No") or opts[0]
+            return fuzzy_pick(opts, "No") or opts[0]
 
         if label_match(label, "currently employed", "present employer", "may we speak to"):
             for kw in ("do not contact", "don't contact", "cannot contact"):
                 m = next((o for o in opts if kw in o.lower()), None)
                 if m: return m
             return fuzzy_pick(opts, "Currently employed") or fuzzy_pick(opts, "Not currently employed") or opts[0]
+
+        # "Do you meet all of the Basic Qualifications for this role?"
+        if label_match(label, "basic qualifications", "meet all of the", "minimum qualifications"):
+            return fuzzy_pick(opts, "Yes") or opts[0]
+
+        # "Do you meet the Preferred Qualifications?" — "Yes, Some" is safe/honest
+        if label_match(label, "preferred qualifications"):
+            return fuzzy_pick(opts, "Yes, Some") or fuzzy_pick(opts, "Yes") or opts[0]
+
+        # "Are you a current student or recent graduate?"
+        if label_match(label, "current student", "recent graduate"):
+            _is_student = any("attending" in e.get("current_status","").lower() for e in EDU)
+            return fuzzy_pick(opts, "Yes" if _is_student else "No") or opts[0]
+
+        # GPA dropdown (range buckets like "3.5 - 4.0") — must be checked BEFORE the
+        # university rule because Capital One's GPA label contains "University/College"
+        if label_match(label, "cumulative gpa", "current gpa", "gpa scale", "cgpa"):
+            school = next((e for e in EDU if "attending" in e.get("current_status","").lower()),
+                          EDU[0] if EDU else None)
+            if school:
+                try:
+                    _gpa = float(str(school.get("gpa","0")).replace(",","") or "0")
+                except ValueError:
+                    _gpa = 0.0
+                if _gpa > 0 and opts:
+                    def _gpa_score(opt):
+                        nums = [float(n) for n in re.findall(r'[\d.]+', opt)]
+                        if len(nums) >= 2:
+                            lo, hi = nums[0], nums[1]
+                            if lo <= _gpa <= hi: return 0
+                            return abs(_gpa - (lo + hi) / 2)
+                        return 9999
+                    non_sel = [o for o in opts if o.lower() not in ("select one","")]
+                    if non_sel: return min(non_sel, key=_gpa_score)
+            return None
+
+        # "What university/college are you currently enrolled in or recently graduated from?"
+        if label_match(label, "university/college", "university or college",
+                       "currently enrolled in", "recently graduated from"):
+            for e in EDU:
+                for variant in e.get("institution_variants", []):
+                    hit = fuzzy_pick(opts, variant)
+                    if hit: return hit
+            return fuzzy_pick(opts, "Other") or None  # ASU/UCSD not in Canadian school lists
+
+        # "Graduation Semester:" — map EDU end_month to Fall/Spring/Summer
+        if label_match(label, "graduation semester"):
+            school = next((e for e in EDU if "attending" in e.get("current_status","").lower()), None)
+            if school:
+                _em = (school.get("end_month","") or "").lower()
+                _mn = int(MONTH_NUM.get(_em, "0"))
+                if 9 <= _mn <= 12:  return fuzzy_pick(opts, "Fall") or opts[0]
+                if 1 <= _mn <= 6:   return fuzzy_pick(opts, "Spring") or opts[0]
+                if 7 <= _mn <= 8:   return fuzzy_pick(opts, "Summer") or opts[0]
+            return None
+
+        # Indigenous identity (Canada EEO) — decline
+        if label_match(label, "indigenous person", "treaty indian", "métis", "first nation",
+                       "inuit", "north american indian"):
+            return fuzzy_pick(opts, "Prefer Not to Disclose") or fuzzy_pick(opts, "No") or opts[0]
+
+        # "Do you currently/previously work(ed) at [this company]?" — pick the "No, never" option.
+        # Capital One uses a long multi-part option with zero-width spaces; fuzzy_pick on "No" finds it.
+        if label_match(label, "previously, worked at", "worked at capital one",
+                       "company acquired by capital one", "previously worked for",
+                       "prior employment at this company"):
+            # Prefer an option that starts with "No" or contains "never"
+            no_opt = next((o for o in opts
+                           if re.search(r'\bno\b', o, re.IGNORECASE)
+                           and not re.search(r'\byes\b', o, re.IGNORECASE)), None)
+            return no_opt or fuzzy_pick(opts, "No") or opts[0]
+
+        # Senior Government Official questions — always No
+        if label_match(label, "senior government official", "government official"):
+            return fuzzy_pick(opts, "No") or opts[0]
+
+        # Ernst & Young / specific accounting firm employment
+        if label_match(label, "ernst & young", "ernst and young", "accounting firm"):
+            return fuzzy_pick(opts, "No") or opts[0]
 
         if label_match(label, "friends", "professional colleagues", "acquaintances"):
             return fuzzy_pick(opts, "No") or opts[0]
@@ -873,11 +1128,70 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
                         return opts[i]
             return None
 
+        # ── Graduation-year / currently-graduating questions (GM-style) ──────────
+        # "Are you graduating this year?" — Yes if any current edu ends this calendar year.
+        if label_match(label, "graduating this year"):
+            import datetime as _dt
+            cur_year = str(_dt.date.today().year)
+            for e in EDU:
+                if str(e.get("end_year", "")) == cur_year:
+                    return fuzzy_pick(opts, "Yes") or opts[0]
+            return fuzzy_pick(opts, "No") or opts[0]
+
+        # "Do you have a Bachelor's/Master's degree in CS/EE/related?" — Yes/No from EDU.
+        if label_match(label, "bachelors degree", "bachelor's degree",
+                       "baccalaureate") and label_match(label, "computer science",
+                       "information system", "information technology"):
+            _has_bs = any("bachelor" in e.get("degree_type","").lower() for e in EDU)
+            return fuzzy_pick(opts, "Yes" if _has_bs else "No") or opts[0]
+
+        if label_match(label, "master's degree", "masters degree", "master of science") \
+                and label_match(label, "computer science", "computer engineering",
+                                "electrical engineering", "related field"):
+            _has_ms = any("master" in e.get("degree_type","").lower() for e in EDU)
+            return fuzzy_pick(opts, "Yes" if _has_ms else "No") or opts[0]
+
+        # Graduation-date dropdown (range buckets like "January-March 2025").
+        # Fires when options contain year numbers — pick the bucket matching the relevant edu.
+        _opts_have_years = any(re.search(r'\b20\d{2}\b', o) for o in opts)
+        if _opts_have_years and label_match(label, "expected graduation date",
+                                            "graduation date", "anticipated graduation"):
+            # Determine which edu entry to use: bachelor's or graduate.
+            _want_grad = label_match(label, "graduate degree", "master", "mba", "phd",
+                                     "juris", "graduate school")
+            if _want_grad:
+                _edu_e = next((e for e in EDU if "master" in e.get("degree_type","").lower()
+                               or "phd" in e.get("degree_type","").lower()), None)
+            else:
+                _edu_e = next((e for e in EDU if "bachelor" in e.get("degree_type","").lower()), None)
+            if _edu_e:
+                _ey = str(_edu_e.get("end_year",""))
+                _em = (_edu_e.get("end_month","") or "").lower()
+                _month_n = MONTH_NUM.get(_em, "00")
+                _mn = int(_month_n) if _month_n.isdigit() else 0
+                # Build quarter label to fuzzy-match: "January-March 2025", "April-June 2025", etc.
+                if 1 <= _mn <= 3:   _qrange = f"January-March {_ey}"
+                elif 4 <= _mn <= 6: _qrange = f"April-June {_ey}"
+                elif 7 <= _mn <= 9: _qrange = f"July-September {_ey}"
+                else:               _qrange = f"October-December {_ey}"
+                hit = fuzzy_pick(opts, _qrange)
+                if hit:
+                    return hit
+                # Fallback: any option containing the year
+                hit = next((o for o in opts if _ey in o), None)
+                if hit: return hit
+
         # Postgraduate intent — "Do you intend to ENROLL in a postgraduate degree?"
         # Josh is already in/completing his terminal Master's program, so he will NOT newly
         # enroll in another postgraduate degree → always "No".
-        if label_match(label, "postgraduate", "graduate degree", "intend to enroll",
-                       "pursuing a degree", "graduate school"):
+        # Guard: only fire when options look like Yes/No (not graduation-date ranges).
+        if label_match(label, "postgraduate", "intend to enroll",
+                       "graduate school") and not _opts_have_years:
+            return fuzzy_pick(opts, "No") or (opts[-1] if opts else None)
+        # "pursuing a degree" / "graduate degree" — only fire for Yes/No options (not date ranges).
+        if label_match(label, "pursuing a degree", "graduate degree") \
+                and label_match(label, "intend", "plan to", "do you intend") \
+                and not _opts_have_years:
             return fuzzy_pick(opts, "No") or (opts[-1] if opts else None)
 
         # STEP 9: Communications/future-openings — always opt OUT ("No / please do not contact").

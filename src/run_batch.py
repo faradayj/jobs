@@ -48,6 +48,9 @@ def print_banner(idx: int, total: int, job: dict):
     print("=" * 70)
 
 
+JOB_TIMEOUT_SEC = 20 * 60  # 20 min: covers manual account creation + review inspection
+
+
 def run_job(job: dict, extra_args: list[str]) -> int:
     cmd = [
         sys.executable, "-u",
@@ -57,8 +60,12 @@ def run_job(job: dict, extra_args: list[str]) -> int:
         *extra_args,
     ]
     print(f"\n[BATCH] Running: {' '.join(cmd)}\n")
-    result = subprocess.run(cmd, cwd=str(ROOT))
-    return result.returncode
+    try:
+        result = subprocess.run(cmd, cwd=str(ROOT), timeout=JOB_TIMEOUT_SEC)
+        return result.returncode
+    except subprocess.TimeoutExpired:
+        print(f"\n[BATCH] ⚠ Job exceeded {JOB_TIMEOUT_SEC // 60} min — killed, moving on.")
+        return -1
 
 
 def prompt_continue(idx: int, total: int) -> str:
