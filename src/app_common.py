@@ -237,7 +237,7 @@ def pick_decline(opts: list[str]) -> str | None:
 def fuzzy_pick(opts: list[str], value: str) -> str | None:
     """Fuzzy match value against options: exact → starts → contains (normalises apostrophes)."""
     def _norm(s: str) -> str:
-        return re.sub(r"[''\-]", "", s.lower().strip())
+        return re.sub(r"['‘’‚‛\-]", "", s.lower().strip())
     vl = value.lower().strip()
     vn = _norm(value)
     for strategy in [
@@ -298,6 +298,7 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
         "pursuing a degree", "graduate school",             # postgrad intent
         "personal relationship",                            # per-company referral answer may change
         "name or email", "their name or email",             # referral follow-up — pre-filled wrong
+        "highest level of education", "education level", "education completed",  # may be wrong from prior run
     )
     _grad_ctx_override = any(k in section or k in _context_hint_lower for k in
                              ("graduation", "anticipated graduation", "expected graduation", "anticipated"))
@@ -367,6 +368,10 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
 
         # Location checkbox group "Available for Any" — always opt in to all locations
         if label.strip().lower() == "available for any":
+            return "true"
+
+        # Disney "Why are you interested in working for us?" checkbox group — pick career advancement
+        if label_match(label, "opportunity for career advancement"):
             return "true"
 
         _PREFER_NOT_KWS = ("don't wish", "don't want to answer", "prefer not",
@@ -479,7 +484,8 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
             return PHONE_DIGITS
         if label_match(label, "address line 1", "street address", "address 1"):
             return PI["address"]
-        if label_match(label, "address line 2", "apt", "suite", "unit"): return ""
+        if label_match(label, "address line 2", "apt number", "suite number",
+                       "apt/suite", "unit number", "unit #") or label.strip() in ("apt", "suite", "unit"): return ""
         if label_match(label, "school location", "institution location", "school city"):
             school = next((e for e in EDU if "attending" in e.get("current_status","").lower()),
                           EDU[0] if EDU else None)
@@ -623,6 +629,47 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
             if school: return str(school.get("end_year",""))
             return str(EDU[0].get("end_year","")) if EDU else ""
 
+        # Visa sponsorship — textarea variant ("Will you require sponsorship?")
+        if label_match(label, "require employment visa sponsorship", "require visa sponsorship",
+                       "will you now or in the future require"):
+            return "No"
+
+        # Visa type elaboration — "If Yes list type; if No write N/A"
+        if label_match(label, "if you answered yes to the previous question",
+                       "list the type of visa sponsorship", "if you answered no.*n/a",
+                       "if you answered \"no,\" please write"):
+            return "N/A"
+
+        # Motorola/bilingual: Canada unrestricted employment auth
+        if label_match(label, "unrestricted employment authorization",
+                       "autorisation d'emploi sans restriction",
+                       "authorization that will allow you to work with any employer in canada"):
+            return "Yes"
+
+        # Motorola/bilingual: non-compete or commitments with another employer
+        if label_match(label, "commitments or agreements with another employer",
+                       "non-compete agreement that might affect",
+                       "engagements ou des ententes avec un autre employeur",
+                       "restrict the type of work"):
+            return "No"
+
+        # Motorola bilingual open-ended textareas
+        if label_match(label, "why are you looking for new opportunities",
+                       "pour quelles raison"):
+            return "Seeking a full-time role in software engineering and data science to apply my ML and data pipeline experience from BILL and my UCSD capstone research."
+
+        if label_match(label, "when are you available to start",
+                       "quand êtes-vous disponible"):
+            return "Within one month of receiving an offer."
+
+        if label_match(label, "what is the best way to contact you",
+                       "quelle est la meilleure façon de vous contacter"):
+            return f"Email: {PI.get('email','joshualingli@gmail.com')} | Phone: {PI.get('phone','(480) 616-8194')}"
+
+        if label_match(label, "are you open to relocation",
+                       "êtes-vous prêt à déménager"):
+            return "Yes — open to relocating anywhere in the United States or Canada."
+
         # Blue Origin: "why interested in Blue Origin" short-answer
         if label_match(label, "interested in blue origin", "why you are interested in blue origin",
                        "why are you interested in blue origin"):
@@ -732,6 +779,11 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
 
     # ── Button dropdown / native select ──────────────────────────────────────
     if tag in ("button", "select") or ftype in ("button", "select-one", "select"):
+        # Fire deterministic rules even when opts weren't prefetched; exec_button_dropdown
+        # will open the dropdown and fuzzy-match the returned string against live options.
+        if label_match(label, "letter of interest", "references, and/or additional required"):
+            return fuzzy_pick(opts, "No") if opts else "No"
+
         if not opts:
             return None
 
@@ -801,6 +853,17 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
                 if m: return m
             return fuzzy_pick(opts, "Currently employed") or fuzzy_pick(opts, "Not currently employed") or opts[0]
 
+        # "Do you have a Bachelor's degree in CS/STEM or equivalent?" — Yes
+        if label_match(label, "bachelor's degree in computer science",
+                       "bachelor.*stem", "degree in computer science",
+                       "equivalent in education and/or work experience"):
+            return fuzzy_pick(opts, "Yes") or opts[0]
+
+        # "Do you have N additional years of software engineering experience?" — No (new grad)
+        if label_match(label, "additional years of software engineering",
+                       "additional years of experience"):
+            return fuzzy_pick(opts, "No") or opts[0]
+
         # "Do you meet all of the Basic Qualifications for this role?"
         if label_match(label, "basic qualifications", "meet all of the", "minimum qualifications"):
             return fuzzy_pick(opts, "Yes") or opts[0]
@@ -808,6 +871,55 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
         # "Do you meet the Preferred Qualifications?" — "Yes, Some" is safe/honest
         if label_match(label, "preferred qualifications"):
             return fuzzy_pick(opts, "Yes, Some") or fuzzy_pick(opts, "Yes") or opts[0]
+
+        # ── UT Austin / Texas state-agency specific questions ────────────────────
+        # "Are you at least 15 years of age?" / "Are you at least 18 years of age?"
+        if label_match(label, "at least 15 years", "15 years of age"):
+            return fuzzy_pick(opts, "Yes") or opts[0]
+
+        # "Are you authorized to work in the country of hire?" — Yes
+        if label_match(label, "authorized to work in the country of hire",
+                       "authorized to work in the country"):
+            return fuzzy_pick(opts, "Yes") or opts[0]
+
+        # "Have you ever worked at [this university]?" — No
+        if label_match(label, "ever worked at university of texas", "previously worked at ut",
+                       "previously employed at the university"):
+            return fuzzy_pick(opts, "No") or opts[0]
+
+        # "Have you ever been barred from employment at [this university]?" — No
+        if label_match(label, "barred from employment", "barred from working"):
+            return fuzzy_pick(opts, "No") or opts[0]
+
+        # "I have confirmed to the best of my knowledge that I am eligible for this job." — Yes
+        if label_match(label, "confirmed to the best of my knowledge", "eligible for this job",
+                       "i have confirmed"):
+            return fuzzy_pick(opts, "Yes") or opts[0]
+
+        # Texas foster-child preference (Gov Code 672) — No (not applicable)
+        if label_match(label, "conservatorship", "foster", "texas department of family",
+                       "dfps", "managing conservatorship"):
+            return fuzzy_pick(opts, "No") or opts[0]
+
+        # "Do you certify you are not employed by a foreign-adversary government?" (15 C.F.R. 791.4)
+        # Correct answer is Yes (certifying NOT employed by listed country)
+        if label_match(label, "791", "governmental entity or political apparatus",
+                       "certify that you are not employed by"):
+            return fuzzy_pick(opts, "Yes") or opts[0]
+
+        # "Can you confirm you meet the minimum qualifications for critical infrastructure?" — Yes
+        if label_match(label, "critical infrastructure", "security and integrity of this infrastructure"):
+            return fuzzy_pick(opts, "Yes") or opts[0]
+
+        # "Are you willing to comply with the university's ethics policy?" (gifts/foreign adversaries) — Yes
+        if label_match(label, "ethics policy", "prohibits accepting gifts",
+                       "gifts or travel from entities associated with foreign"):
+            return fuzzy_pick(opts, "Yes") or opts[0]
+
+        # "Do you agree to notify the university of any future personal travel to a foreign-adversary nation?" — Yes
+        if label_match(label, "notify the university", "post-travel briefing",
+                       "foreign-adversary nation", "future personal travel"):
+            return fuzzy_pick(opts, "Yes") or opts[0]
 
         # "Are you a current student or recent graduate?"
         if label_match(label, "current student", "recent graduate"):
@@ -1208,8 +1320,12 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
             return fuzzy_pick(opts, "English") or opts[0]
 
         if label_match(label, "degree", "education level", "highest"):
-            if EDU:
-                edu = EDU[0]
+            _non_sel = [o for o in opts if o.lower() not in ("select one", "")]
+            # "highest level of education completed" → use highest *completed* degree (skip in-progress)
+            _completed = [e for e in EDU if "attending" not in e.get("current_status","").lower()
+                          and "pursuing" not in e.get("current_status","").lower()]
+            _edu_list = _completed if _completed else EDU
+            for edu in _edu_list:
                 abbrev = edu.get("degree_abbreviation","")
                 if abbrev:
                     hit = fuzzy_pick(opts, abbrev)
@@ -1217,7 +1333,10 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
                 for variant in edu.get("degree_search_variants",[]):
                     hit = fuzzy_pick(opts, variant)
                     if hit: return hit
-                return fuzzy_pick(opts, edu.get("degree_type","")) or opts[0]
+                hit = fuzzy_pick(opts, edu.get("degree_type",""))
+                if hit: return hit
+            # Fallback: pick highest non-placeholder option (last in typical edu-level list)
+            return _non_sel[-1] if _non_sel else None
 
         if label_match(label, "start month"):
             data = WE[0] if ("work" in section or "experience" in section) else (EDU[0] if EDU else None)

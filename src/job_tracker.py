@@ -570,7 +570,7 @@ async def fetch_job_description(apply_url):
 SCORING_RUBRIC = """Scoring Criteria — score 1, 2, or 3:
 - Score 1 (High Priority / Strong Match): target titles (SWE/DS/MLE/DE), degree ≤ Master's in CS/DS, 0-3 yrs experience, multiple skill matches.
 - Score 2 (Medium Priority): major/experience aligns but missing some non-critical skills.
-- Score 3 (Low Priority / Ineligible): requires PhD, 4+ yrs full-time experience, or unrelated background.
+- Score 3 (Low Priority / Ineligible): requires PhD, 4+ yrs full-time experience, unrelated background, OR requires a letter of recommendation / letter of reference / writing sample (candidate cannot provide these).
 
 Output ONLY a valid JSON object — no markdown, no commentary:
 {
@@ -1038,6 +1038,26 @@ async def run_export_prompts(limit: int = -1):
             continue
 
         print(f"    OK ({len(job_desc)} chars)")
+
+        # Pre-score ineligibility: auto-reject listings that require extra application
+        # materials the bot cannot provide (letters of recommendation/interest, writing samples).
+        _desc_lower = job_desc.lower()
+        _disqualifying_materials = [
+            "letter of recommendation", "letters of recommendation",
+            "letter of reference", "letters of reference",
+            "writing sample", "writing samples",
+            "letter of interest required", "letters of interest required",
+        ]
+        if any(t in _desc_lower for t in _disqualifying_materials):
+            print(f"    [INELIGIBLE] Requires extra materials (letter of rec/reference/writing sample) — marking Ineligible.")
+            cursor.execute(
+                "UPDATE jobs SET status='Ineligible', score=3, "
+                "suitability_reason='FIT:0 | -requires-letter-of-rec', job_description=? WHERE id=?",
+                (job_desc, job_id),
+            )
+            conn.commit()
+            continue
+
         exported.append({
             "id": job_id,
             "company": company,
