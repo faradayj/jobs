@@ -43,7 +43,7 @@ COMMANDS
 OUTPUTS
 -------
   jobs_tracker.csv    Apply URL first column, then Company / Role / Status / etc.
-  jobs_details.json   Full descriptions + core_alignments / technical_gaps per URL.
+  jobs_details.json   Full scraped job descriptions per URL (avoids re-scraping on ingest).
 """
 
 import os
@@ -85,18 +85,9 @@ README_URL = "https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/
 # --- 1. Data Classes ---
 
 @dataclass
-class JobMatchMetrics:
-    overall_fit_percentage: float
-    confidence_score: float
-
-@dataclass
 class JobEvaluation:
     score: int
     suitability_reason: str
-    match_metrics: JobMatchMetrics
-    core_alignments: list
-    technical_gaps: list
-    vulnerability_analysis: str
 
 # --- 1b. Module-level constants ---
 
@@ -125,11 +116,6 @@ SCHEMA_SQL = """
         score INTEGER,
         suitability_reason TEXT,
         job_description TEXT,
-        core_alignments TEXT,
-        technical_gaps TEXT,
-        vulnerability_analysis TEXT,
-        overall_fit_percentage REAL,
-        confidence_score REAL,
         date_added DATETIME DEFAULT CURRENT_TIMESTAMP,
         date_evaluated DATETIME,
         date_applied DATETIME
@@ -198,54 +184,28 @@ def import_csv_to_db():
             
             score_str = get_val("Score")
             score = int(score_str) if score_str and score_str.isdigit() else None
-            
-            fit_str = get_val("Overall Fit %")
-            overall_fit = float(fit_str) if fit_str and fit_str != 'None' and fit_str != '' else None
-            
-            conf_str = get_val("Confidence Score")
-            confidence = float(conf_str) if conf_str and conf_str != 'None' and conf_str != '' else None
-            
+
             date_added = get_val("Date Added")
             date_evaluated = get_val("Date Evaluated")
             date_applied = get_val("Date Applied")
             suitability_reason = get_val("Suitability Reason")
             apply_url = get_val("Apply URL")
-            
-            # Retrieve detailed columns from either the CSV (if present for legacy reasons) or JSON cache
+
+            # Retrieve description from either the CSV (if present for legacy reasons) or JSON cache
             job_description = get_val("Job Description")
-            core_alignments = get_val("Core Alignments")
-            technical_gaps = get_val("Technical Gaps")
-            vulnerability_analysis = get_val("Vulnerability Analysis")
-            
-            # Fall back to JSON details cache if not in CSV
-            if apply_url in details_cache:
-                job_details = details_cache[apply_url]
-                if not job_description:
-                    job_description = job_details.get("job_description", "")
-                if not core_alignments:
-                    core_alignments = json.dumps(job_details.get("core_alignments", []))
-                if not technical_gaps:
-                    technical_gaps = json.dumps(job_details.get("technical_gaps", []))
-                if not vulnerability_analysis:
-                    vulnerability_analysis = job_details.get("vulnerability_analysis", "")
-            
-            # Defaults
+            if not job_description and apply_url in details_cache:
+                job_description = details_cache[apply_url].get("job_description", "")
             job_description = job_description or ""
-            core_alignments = core_alignments or "[]"
-            technical_gaps = technical_gaps or "[]"
-            vulnerability_analysis = vulnerability_analysis or ""
-            
+
             cursor.execute("""
                 INSERT OR REPLACE INTO jobs (
                     id, company, role, location, apply_url, category, status, score,
-                    suitability_reason, job_description, core_alignments, technical_gaps,
-                    vulnerability_analysis, overall_fit_percentage, confidence_score,
+                    suitability_reason, job_description,
                     date_added, date_evaluated, date_applied
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 job_id, company, role, location, apply_url, category, status, score,
-                suitability_reason, job_description, core_alignments, technical_gaps,
-                vulnerability_analysis, overall_fit, confidence, date_added, date_evaluated,
+                suitability_reason, job_description, date_added, date_evaluated,
                 date_applied
             ))
             
@@ -575,27 +535,19 @@ SCORING_RUBRIC = """Scoring Criteria — score 1, 2, or 3:
 Output ONLY a valid JSON object — no markdown, no commentary:
 {
   "score": 1,
-  "suitability_reason": "FIT:85 | +new-grad +Python +ML | -needs-Go -cleared",
-  "match_metrics": {"overall_fit_percentage": 85, "confidence_score": 90},
-  "core_alignments": ["requirement that matches candidate experience"],
-  "technical_gaps": ["critical technology missing from candidate profile"],
-  "vulnerability_analysis": "Where candidate might struggle in coding/system design interview."
+  "suitability_reason": "+new-grad +Python +ML | -needs-Go -cleared"
 }
 
 IMPORTANT — suitability_reason format:
-  "FIT:<fit_pct> | +<match1> +<match2> ... | -<gap1> -<gap2> ..."
-  • FIT: the overall_fit_percentage as an integer.
+  "+<match1> +<match2> ... | -<gap1> -<gap2> ..."
   • + tokens: key strengths / matching requirements (short kebab, max 4 words each).
   • - tokens: key gaps / disqualifiers (short kebab, max 4 words each).
-  • Max length: 120 characters. Do NOT write prose — only this compact tag format."""
+  • Max length: 80 characters. Do NOT write prose, do NOT include a fit percentage — only
+    this compact tag format. The score (1/2/3) already conveys priority."""
 
 SCORING_OUTPUT_SCHEMA = {
     "score": "1 | 2 | 3",
-    "suitability_reason": "FIT:<n> | +match1 +match2 | -gap1 -gap2  (max 120 chars)",
-    "match_metrics": {"overall_fit_percentage": 0, "confidence_score": 0},
-    "core_alignments": ["requirement that matches candidate experience"],
-    "technical_gaps": ["critical technology missing from candidate profile"],
-    "vulnerability_analysis": "Where candidate might struggle in coding/system design interview.",
+    "suitability_reason": "+match1 +match2 | -gap1 -gap2  (max 80 chars, no prose, no fit%)",
 }
 
 async def evaluate_job_with_llm(api_key: str, profile_data: dict, job_description: str) -> JobEvaluation:
@@ -632,9 +584,6 @@ Candidate Profile:
     content = content.strip()
 
     data = json.loads(content)
-    mm = data.get("match_metrics", {})
-    if not isinstance(mm, dict):
-        mm = {}
 
     score_val = data.get("score", 3)
     try:
@@ -645,21 +594,11 @@ Candidate Profile:
         score_val = 3
 
     raw_reason = str(data.get("suitability_reason", ""))
-    # Enforce compact tag format: if model returned prose, truncate to 120 chars
-    if raw_reason and not raw_reason.startswith("FIT:"):
-        raw_reason = raw_reason[:120].rstrip()
-    suitability_reason = raw_reason or f"FIT:{int(mm.get('overall_fit_percentage',0))} | (no detail)"
+    suitability_reason = raw_reason[:80].rstrip() if raw_reason else "(no detail)"
 
     return JobEvaluation(
         score=score_val,
         suitability_reason=suitability_reason,
-        match_metrics=JobMatchMetrics(
-            overall_fit_percentage=float(mm.get("overall_fit_percentage", 0)),
-            confidence_score=float(mm.get("confidence_score", 0))
-        ),
-        core_alignments=list(data.get("core_alignments", [])),
-        technical_gaps=list(data.get("technical_gaps", [])),
-        vulnerability_analysis=str(data.get("vulnerability_analysis", ""))
     )
 # --- 5. Main Action Commands ---
 
@@ -687,24 +626,31 @@ def cleanup_database_locations_and_errors(conn):
         reset_count += 1
             
     # 3. Reset jobs that were evaluated with invalid descriptions (CAPTCHAs, generic landing pages, or very short texts)
+    # NOTE: a short/absent cached description does NOT by itself mean the evaluation was bad —
+    # the offline export/import-scores path can leave job_description empty in the DB even
+    # though the description was seen and a real score was produced (see run_import_scores).
+    # Only treat "short description" as invalid when there is no evaluation worth protecting
+    # (no suitability_reason). Explicit CAPTCHA/landing-page reason text always invalidates,
+    # regardless of description length.
     cursor.execute("""
-        SELECT id, location, status, suitability_reason, length(job_description) FROM jobs 
+        SELECT id, location, status, suitability_reason, length(job_description) FROM jobs
         WHERE status LIKE 'Eligible%' OR status = 'Ineligible' OR status = 'Ineligible (Non-US/Canada)'
     """)
     evaluated_jobs = cursor.fetchall()
     reset_invalid_count = 0
     for job_id, loc, status, reason, desc_len in evaluated_jobs:
         reason_lower = (reason or "").lower()
+        has_valid_eval = bool((reason or "").strip())
         is_invalid = False
-        
+
         # Check for CAPTCHA/bot check or generic landing page indicators
-        if desc_len is not None and desc_len < 600:
+        if desc_len is not None and desc_len < 600 and not has_valid_eval:
             is_invalid = True
         elif "captcha" in reason_lower or "bot check" in reason_lower or "security check" in reason_lower or "human verification" in reason_lower:
             is_invalid = True
         elif "generic company landing page" in reason_lower or "unable to evaluate" in reason_lower or "impossible to evaluate" in reason_lower or "no job description" in reason_lower:
             is_invalid = True
-            
+
         if is_invalid:
             # But wait, let's make sure we don't reset expired listings that contain "page not found" 
             cursor.execute("SELECT job_description FROM jobs WHERE id = ?", (job_id,))
@@ -884,11 +830,6 @@ async def _evaluate_single_job(conn, job: tuple, profile_data: dict, api_key: st
                 score = ?,
                 suitability_reason = ?,
                 job_description = ?,
-                core_alignments = ?,
-                technical_gaps = ?,
-                vulnerability_analysis = ?,
-                overall_fit_percentage = ?,
-                confidence_score = ?,
                 date_evaluated = CURRENT_TIMESTAMP
             WHERE id = ?
         """, (
@@ -896,11 +837,6 @@ async def _evaluate_single_job(conn, job: tuple, profile_data: dict, api_key: st
             score_val,
             eval_result.suitability_reason,
             job_desc,
-            json.dumps(eval_result.core_alignments),
-            json.dumps(eval_result.technical_gaps),
-            eval_result.vulnerability_analysis,
-            eval_result.match_metrics.overall_fit_percentage,
-            eval_result.match_metrics.confidence_score,
             job_id,
         ))
         conn.commit()
@@ -1101,6 +1037,26 @@ def run_import_scores():
         print(f"[ERROR] eval_scores.json must be a JSON array of score objects.")
         return
 
+    # Load the scraped descriptions from the export step so they get persisted alongside the
+    # score. Without this, a job scored via export-prompts/import-scores lands in the DB with
+    # a real evaluation but no job_description — which a later `ingest` cleanup pass can
+    # misread as an invalid/CAPTCHA scrape and wrongly reset (see cleanup_database_locations_and_errors).
+    pending_descs_by_url = {}
+    pending_descs_by_id = {}
+    if EVAL_PENDING_PATH.exists():
+        try:
+            with open(EVAL_PENDING_PATH, "r", encoding="utf-8") as f:
+                pending_data = json.load(f)
+            for pj in pending_data.get("jobs", []):
+                desc = pj.get("job_description", "")
+                if desc and len(desc) >= 300:
+                    if pj.get("apply_url"):
+                        pending_descs_by_url[pj["apply_url"]] = desc
+                    if pj.get("id") is not None:
+                        pending_descs_by_id[str(pj["id"])] = desc
+        except Exception as e:
+            print(f"[!] Warning: could not read {EVAL_PENDING_PATH} for description backfill: {e}")
+
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
@@ -1134,20 +1090,8 @@ def run_import_scores():
         except Exception:
             score_val = 3
 
-        mm = entry.get("match_metrics", {})
-        if not isinstance(mm, dict):
-            mm = {}
-        fit_pct = float(mm.get("overall_fit_percentage", 0))
-        conf    = float(mm.get("confidence_score", 0))
-
         raw_reason = str(entry.get("suitability_reason", ""))
-        if raw_reason and not raw_reason.startswith("FIT:"):
-            raw_reason = raw_reason[:120].rstrip()
-        reason = raw_reason or f"FIT:{int(fit_pct)} | (no detail)"
-
-        core_alignments    = json.dumps(list(entry.get("core_alignments", [])))
-        technical_gaps     = json.dumps(list(entry.get("technical_gaps", [])))
-        vulnerability_analysis = str(entry.get("vulnerability_analysis", ""))
+        reason = raw_reason[:80].rstrip() if raw_reason else "(no detail)"
 
         # Apply same status mapping as _evaluate_single_job
         if not is_us_or_canada(location):
@@ -1156,18 +1100,27 @@ def run_import_scores():
         else:
             status_str = f"Eligible (Priority {score_val})" if score_val < 3 else "Ineligible"
 
-        cursor.execute("""
-            UPDATE jobs
-            SET status=?, score=?, suitability_reason=?,
-                core_alignments=?, technical_gaps=?, vulnerability_analysis=?,
-                overall_fit_percentage=?, confidence_score=?,
-                date_evaluated=CURRENT_TIMESTAMP
-            WHERE id=?
-        """, (
-            status_str, score_val, reason,
-            core_alignments, technical_gaps, vulnerability_analysis,
-            fit_pct, conf, db_id,
-        ))
+        job_desc = pending_descs_by_url.get(apply_url) or pending_descs_by_id.get(str(job_id) if job_id is not None else str(db_id))
+
+        if job_desc:
+            cursor.execute("""
+                UPDATE jobs
+                SET status=?, score=?, suitability_reason=?,
+                    job_description=?,
+                    date_evaluated=CURRENT_TIMESTAMP
+                WHERE id=?
+            """, (
+                status_str, score_val, reason, job_desc, db_id,
+            ))
+        else:
+            cursor.execute("""
+                UPDATE jobs
+                SET status=?, score=?, suitability_reason=?,
+                    date_evaluated=CURRENT_TIMESTAMP
+                WHERE id=?
+            """, (
+                status_str, score_val, reason, db_id,
+            ))
         conn.commit()
         print(f"  [IMPORT] [{db_id}] {company} — Score {score_val} ({status_str}) | {reason[:60]}")
         imported += 1
@@ -1209,16 +1162,16 @@ def list_priority_jobs(priority=1):
     cursor = conn.cursor()
     
     cursor.execute("""
-        SELECT id, company, role, location, apply_url, overall_fit_percentage 
-        FROM jobs 
+        SELECT id, company, role, location, apply_url, suitability_reason
+        FROM jobs
         WHERE score = ? AND status LIKE 'Eligible%'
-        ORDER BY overall_fit_percentage DESC
+        ORDER BY date_added DESC
     """, (priority,))
     jobs = cursor.fetchall()
-    
+
     print(f"\n=== Priority {priority} Jobs (Count: {len(jobs)}) ===")
-    for job_id, company, role, location, url, fit in jobs:
-        print(f"[{job_id}] {company} - {role} ({location}) | Fit: {fit}%")
+    for job_id, company, role, location, url, reason in jobs:
+        print(f"[{job_id}] {company} - {role} ({location}) | {reason or ''}")
         print(f"    Link: {url}")
         print("-" * 60)
     conn.close()
@@ -1354,27 +1307,27 @@ def run_apply_loop():
     
     # Select all active jobs that are eligible (Priority 1 or 2)
     cursor.execute("""
-        SELECT id, company, role, location, score, overall_fit_percentage, apply_url 
-        FROM jobs 
+        SELECT id, company, role, location, score, apply_url
+        FROM jobs
         WHERE status LIKE 'Eligible (Priority %'
-        ORDER BY score ASC, overall_fit_percentage DESC, date_added DESC
+        ORDER BY score ASC, date_added DESC
     """)
     jobs = cursor.fetchall()
     conn.close()
-    
+
     if not jobs:
         print("[*] No eligible jobs found to apply.")
         return
-        
+
     print(f"\n[*] Found {len(jobs)} eligible jobs for application loop.")
     print("[*] Starting loop from highest score/priority to lowest...")
-    
+
     import subprocess
 
-    for idx, (job_id, company, role, location, score, fit, url) in enumerate(jobs):
+    for idx, (job_id, company, role, location, score, url) in enumerate(jobs):
         print("\n" + "="*80)
         print(f"[{idx+1}/{len(jobs)}] Job ID {job_id}: {company} - {role}")
-        print(f"      Location: {location} | Priority Score: {score} | Fit: {fit}%")
+        print(f"      Location: {location} | Priority Score: {score}")
         print(f"      Link: {url}")
         
         app_script = detect_applicator(url)
@@ -1419,33 +1372,31 @@ def export_db_to_csv():
         # Fetch summary columns for CSV — Apply URL first for quick clicking
         cursor.execute("""
             SELECT apply_url, id, company, role, location, category, status, score,
-                   overall_fit_percentage, confidence_score, date_added, date_evaluated,
-                   date_applied, suitability_reason
+                   date_added, date_evaluated, date_applied, suitability_reason
             FROM jobs
-            ORDER BY score ASC, overall_fit_percentage DESC, date_added DESC
+            ORDER BY score ASC, date_added DESC
         """)
         csv_rows = cursor.fetchall()
 
         csv_headers = [
             "Apply URL", "ID", "Company", "Role", "Location", "Category", "Status", "Score",
-            "Overall Fit %", "Confidence Score", "Date Added", "Date Evaluated",
-            "Date Applied", "Suitability Reason",
+            "Date Added", "Date Evaluated", "Date Applied", "Suitability Reason",
         ]
-        
+
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(csv_headers)
             writer.writerows(csv_rows)
         print(f"[+] CSV Update: Exported clean jobs list to '{csv_path}'.")
-        
-        # Fetch details columns for JSON
+
+        # Fetch descriptions for the details cache (used to avoid re-scraping on ingest)
         cursor.execute("""
-            SELECT apply_url, job_description, core_alignments, technical_gaps, vulnerability_analysis
+            SELECT apply_url, job_description
             FROM jobs
             WHERE job_description IS NOT NULL AND job_description != ''
         """)
         details_rows = cursor.fetchall()
-        
+
         # Load existing details JSON first to preserve other entries if needed
         existing_details = {}
         if details_path.exists():
@@ -1454,24 +1405,10 @@ def export_db_to_csv():
                     existing_details = json.load(f)
             except Exception:
                 pass
-                
-        for apply_url, desc, alignments_json, gaps_json, vuln in details_rows:
-            try:
-                alignments = json.loads(alignments_json) if alignments_json else []
-            except Exception:
-                alignments = []
-            try:
-                gaps = json.loads(gaps_json) if gaps_json else []
-            except Exception:
-                gaps = []
-                
-            existing_details[apply_url] = {
-                "job_description": desc,
-                "core_alignments": alignments,
-                "technical_gaps": gaps,
-                "vulnerability_analysis": vuln
-            }
-            
+
+        for apply_url, desc in details_rows:
+            existing_details[apply_url] = {"job_description": desc}
+
         with open(details_path, "w", encoding="utf-8") as f:
             json.dump(existing_details, f, indent=2, ensure_ascii=False)
         print(f"[+] Details Cache: Exported detailed job descriptions to '{details_path}'.")

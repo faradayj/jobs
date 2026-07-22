@@ -60,6 +60,9 @@ PI      = LIBRARY["personal_info"]
 WE      = LIBRARY.get("work_experience", [])
 EDU     = LIBRARY.get("education_history", [])
 LANG    = LIBRARY.get("languages", [])
+SKILLS  = LIBRARY.get("skills", [])
+ROLE_PREFS = LIBRARY.get("role_preferences", {})
+PREPARED_ANSWERS = LIBRARY.get("prepared_answers", {})
 
 # Résumé: resolve to absolute path for set_input_files
 _resume_rel = LIBRARY.get("resume_path", "")
@@ -225,6 +228,43 @@ def label_match(label: str, *keywords) -> bool:
     l = label.lower()
     return any(k in l for k in keywords)
 
+def generic_fit_blurb(max_len: int = 600) -> str:
+    """Generic 'why are you a good fit' short-answer built from the candidate's own
+    profile — used as a rules-only fallback for required open-ended prose questions
+    when no DeepSeek key is available. Not tailored to the specific listing, but avoids
+    leaving a required field blank."""
+    titles = ROLE_PREFS.get("target_titles", []) or ["Software Engineer"]
+    title = titles[0]
+    degree = EDU[0].get("degree_type", "") if EDU else ""
+    major = (EDU[0].get("major_search_term") or "") if EDU else ""
+    school = (EDU[0]["institution_variants"][0] if EDU and EDU[0].get("institution_variants") else "")
+    top_skills = ", ".join(SKILLS[:6]) if SKILLS else ""
+    recent_work = WE[0].get("description", "") if WE else ""
+    recent_work_snippet = recent_work[:200].rsplit(" ", 1)[0] if recent_work else ""
+
+    parts = [f"I'm a {title.lower()} candidate"]
+    if degree and school:
+        parts.append(f"with a {degree} in {major or 'Computer Science'} from {school}")
+    if top_skills:
+        parts.append(f"and hands-on experience with {top_skills}")
+    blurb = " ".join(parts) + "."
+    if recent_work_snippet:
+        blurb += f" Recently, {recent_work_snippet}."
+    return blurb[:max_len].rstrip()
+
+
+def generic_experience_blurb(max_len: int = 600) -> str:
+    """Generic technical-experience short-answer for open-ended questions this rules engine
+    cannot meaningfully tailor (e.g. "describe a system you've built", "what startup/founder
+    experience do you have", "what AI-tool experience do you have"). Grounded in the
+    candidate's actual work description — honest, not tailored to the specific question, but
+    avoids leaving a required field blank. A DeepSeek-backed run would answer these questions
+    with real judgment; this is a rules-only placeholder."""
+    recent_work = WE[0].get("description", "") if WE else ""
+    if not recent_work:
+        return "I don't have directly applicable experience with this yet, but I'm eager to learn."
+    return recent_work[:max_len].rstrip()
+
 DECLINE_KEYWORDS = ["not wish", "don't wish", "prefer not", "decline", "choose not",
                     "not wish to self", "no wish", "i do not wish"]
 
@@ -235,9 +275,12 @@ def pick_decline(opts: list[str]) -> str | None:
     return None
 
 def fuzzy_pick(opts: list[str], value: str) -> str | None:
-    """Fuzzy match value against options: exact → starts → contains (normalises apostrophes)."""
+    """Fuzzy match value against options: exact → starts → contains (normalises apostrophes,
+    and treats hyphens/commas as equivalent word separators, e.g. "X - Y" == "X, Y")."""
     def _norm(s: str) -> str:
-        return re.sub(r"['‘’‚‛\-]", "", s.lower().strip())
+        s = re.sub(r"['‘’‚‛]", "", s.lower().strip())
+        s = re.sub(r"[,\-]", " ", s)
+        return re.sub(r"\s+", " ", s).strip()
     vl = value.lower().strip()
     vn = _norm(value)
     for strategy in [
@@ -251,6 +294,51 @@ def fuzzy_pick(opts: list[str], value: str) -> str | None:
         m = next((o for o in opts if strategy(o)), None)
         if m: return m
     return None
+
+
+def pick_gpa_bucket(opts: list[str], gpa: float) -> str | None:
+    """Match a numeric GPA against range-bucket options like '3.75+', '3.4 - 3.70',
+    'Below 3.4' — fuzzy_pick can't handle these since the GPA value never appears
+    verbatim in the option text. Picks the bucket whose numeric range contains gpa,
+    preferring the highest-matching bucket when ranges overlap ('+' buckets first)."""
+    best = None
+    for o in opts:
+        ol = o.lower().strip()
+        m_plus = re.match(r"^([\d.]+)\s*\+", ol)
+        if m_plus and gpa >= float(m_plus.group(1)):
+            return o  # '+' bucket is unambiguous — take it immediately
+        m_below = re.match(r"^below\s+([\d.]+)", ol)
+        if m_below and gpa < float(m_below.group(1)):
+            best = best or o
+            continue
+        m_range = re.match(r"^([\d.]+)\s*-\s*([\d.]+)", ol)
+        if m_range and float(m_range.group(1)) <= gpa <= float(m_range.group(2)):
+            best = best or o
+    return best
+
+
+# Preference order for "which engineering/role track?" ranked-choice questions (1st/2nd/3rd
+# engineering preference, etc.) when no rule-based value is knowable ahead of time — the
+# candidate's target roles skew backend/systems, so prefer those tracks over frontend/mobile
+# when picking among a board's real (live-discovered) options.
+ROLE_TRACK_PRIORITY = ["backend", "full-stack", "fullstack", "full stack", "infrastructure",
+                       "systems", "platform", "distributed systems", "data engineering",
+                       "machine learning", "ml", "api", "server", "frontend", "front-end",
+                       "front end", "mobile", "ios", "android", "web"]
+
+
+def pick_role_track(opts: list[str], avoid: set | None = None) -> str | None:
+    """Pick the best-fit option from a ranked engineering/role-track dropdown (e.g. 1st/2nd/
+    3rd engineering preference), preferring backend-leaning tracks per ROLE_TRACK_PRIORITY.
+    Skips anything already in `avoid` (so 1st/2nd/3rd picks differ). Falls back to the first
+    remaining option if nothing in the priority list matches."""
+    avoid = avoid or set()
+    candidates = [o for o in opts if o not in avoid] or list(opts)
+    for keyword in ROLE_TRACK_PRIORITY:
+        match = next((o for o in candidates if keyword in o.lower()), None)
+        if match:
+            return match
+    return candidates[0] if candidates else None
 
 
 def _current_connection() -> dict | None:
@@ -370,9 +458,42 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
         if label.strip().lower() == "available for any":
             return "true"
 
+        # Location checkbox GROUPS where each option is its own checkbox labeled "City, ST"
+        # (e.g. "San Francisco, CA", "Seattle, WA") — per
+        # role_preferences.location_and_relocation_rule, the candidate is open to relocating
+        # anywhere, so multi-select location lists should have ALL options checked.
+        if re.match(r"^\s*[A-Za-z .'-]+,\s*[A-Z]{2}\s*$", label.strip()):
+            return "true"
+
         # Disney "Why are you interested in working for us?" checkbox group — pick career advancement
         if label_match(label, "opportunity for career advancement"):
             return "true"
+
+        # Start-date availability checkbox GROUPS (each option scanned as its own checkbox,
+        # e.g. "June 2026", "July 2026", ... "After October 1, 2026"). Check the box for the
+        # earliest month that is still >= ~1 month from today — matches the single-line
+        # "when are you available to start" text answer used elsewhere ("within one month").
+        _month_label = re.match(
+            r"^\s*(january|february|march|april|may|june|july|august|september|october|"
+            r"november|december)\s+(\d{4})\s*$", label.strip(), re.I)
+        _after_label = re.match(
+            r"^\s*after\s+(january|february|march|april|may|june|july|august|september|october|"
+            r"november|december)\s+\d{1,2},?\s*(\d{4})\s*$", label.strip(), re.I)
+        if _month_label or _after_label:
+            import datetime as _dt
+            _target = _dt.date.today() + _dt.timedelta(days=30)
+            _target_month_start = _dt.date(_target.year, _target.month, 1)
+            if _month_label:
+                _opt_year = int(_month_label.group(2))
+                _opt_month = int(MONTH_NUM[_month_label.group(1).lower()])
+                _opt_date = _dt.date(_opt_year, _opt_month, 1)
+                return "true" if _opt_date == _target_month_start else "false"
+            # "After <Month> <Day>, <Year>" catch-all option — only check it if the target
+            # month is strictly later than the named month (i.e. no earlier listed option fits).
+            _after_year = int(_after_label.group(2))
+            _after_month = int(MONTH_NUM[_after_label.group(1).lower()])
+            _after_date = _dt.date(_after_year, _after_month, 1)
+            return "true" if _target_month_start > _after_date else "false"
 
         _PREFER_NOT_KWS = ("don't wish", "don't want to answer", "prefer not",
                            "decline to", "do not want to answer", "i do not want to answer")
@@ -414,6 +535,14 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
             if label_match(label, "state", "province"):
                 if "united" not in label.lower() and len(label) < 50:
                     return PI["state"]
+            # "Do you live within commutable distance of <City>?" / "are you local to <City>?"
+            # — a Yes/No proximity question, not a request for the candidate's own city.
+            # Must be checked BEFORE the generic "city" match below, since city names like
+            # "New York City" or "Kansas City" contain the substring "city" and would
+            # otherwise wrongly return the candidate's home city as the answer.
+            if label_match(label, "commutable distance", "commuting distance", "live within",
+                           "local to", "live near", "based near", "based in the area"):
+                return "No"
             if label_match(label, "city", "location (city)", "candidate-location"):
                 return PI.get("city", "San Jose")
             # Education dropdowns
@@ -424,6 +553,118 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
             if label_match(label, "degree", "education level", "highest education"):
                 deg = (EDU[0].get("degree_type") or EDU[0].get("degree","Bachelor's Degree") if EDU else "Bachelor's Degree")
                 return deg
+            if label_match(label, "discipline", "major", "field of study"):
+                return EDU[0].get("major_search_term") or (EDU[0]["major_variants"][0] if EDU and EDU[0].get("major_variants") else "")
+            # Education Start/End Month react-select dropdowns (e.g. Greenhouse's paired
+            # "Start date month" / "End date month" fields, distinct from the plain-text
+            # Year counterparts handled elsewhere in the text branch).
+            if re.match(r"^\s*start\s+(date\s+)?month\s*\*?\s*$", label.strip(), re.I) and EDU:
+                return EDU[0].get("start_month", "")
+            if re.match(r"^\s*end\s+(date\s+)?month\s*\*?\s*$", label.strip(), re.I) and EDU:
+                return EDU[0].get("end_month", "")
+            # "Have you ever been employed by / worked at <Company>...?" — previous-employment
+            # screening question. Distinguish from "current or previous employer" (a free-text
+            # field asking WHO the candidate worked for) by requiring "employed by"/"worked
+            # for"/"worked at" phrasing, not just "employer".
+            if label_match(label, "employed by", "have you worked for", "have you previously worked",
+                           "have you ever worked", "have you worked at"):
+                return "No"
+            # Industry-experience / internship-count screening questions — candidate has
+            # multiple internships and current full-time experience, so "Yes" is accurate.
+            if label_match(label, "years of industry work experience", "completed at least",
+                           "relevant full-time experience", "internship"):
+                return "Yes"
+            # Earliest available start date (react-select variant; free-text variant is
+            # handled elsewhere via "when are you available to start").
+            if label_match(label, "earliest available start date", "available to start"):
+                return "Within one month of receiving an offer."
+            # Role-track interest screening (e.g. "interest and experience in a Mobile role?")
+            # — candidate's target titles are Software Engineer / Data Scientist / MLE with no
+            # mobile/frontend specialization claimed; answer No unless it's a backend/full-stack
+            # variant of the same question.
+            if label_match(label, "interest and experience in a") and label_match(label, "role"):
+                if label_match(label, "backend", "full-stack", "fullstack", "full stack"):
+                    return "Yes"
+                return "No"
+            if label_match(label, "gpa"):
+                return str(EDU[0].get("gpa", "")) if EDU else ""
+            if label_match(label, "sms", "whatsapp", "text message"):
+                return "No"
+            # "Are you [currently] [authorized/eligible] to work [lawfully] in <Country>...?"
+            # — distinct from visa-sponsorship questions (handled separately below); default
+            # Yes for the candidate's home country. Match "authorized...to work...in" and
+            # "eligible...to work...in" loosely since companies insert words like "lawfully"
+            # or a company name in between (e.g. "authorized to work lawfully in the US for X").
+            if label_match(label, "eligible to work in", "authorized to work in",
+                           "currently eligible to work"):
+                return "Yes"
+            if (label_match(label, "authorized", "eligible") and label_match(label, "work")
+                    and label_match(label, " in ")):
+                return "Yes"
+            # Bare "U.S. WORK AUTHORIZATION" style labels (no "work in"/"eligible to work"
+            # phrasing at all — just a section-style label followed by a plain Yes/No
+            # dropdown). Distinct from the phrasing-dependent matches above; some boards
+            # (e.g. Anduril) use this terser style.
+            if re.match(r"^\s*u\.?s\.?\s+work\s+authorization\s*\*?\s*$", label.strip(), re.I):
+                return "Yes"
+            # "If you have held a clearance in the past, what level?" follow-up — check
+            # BEFORE the general clearance-eligibility rule below (both mention "clearance";
+            # this one is specifically about a *past level*, not current eligibility).
+            if label_match(label, "clearance") and label_match(label, "level", "held"):
+                return "N/A"
+            # Security clearance eligibility — three-option style ("Yes, I hold an active
+            # clearance" / "Yes, I am eligible for a clearance" / "No"). Candidate is a U.S.
+            # citizen with no active clearance, so "eligible" (not "hold") is accurate.
+            # Requires "obtain and maintain" phrasing (the real clearance-eligibility
+            # question's distinctive wording) to avoid over-matching compound labels that
+            # merely mention "clearance eligibility" in passing while actually being a plain
+            # Yes/No "are you eligible to meet this requirement" question (see below).
+            if label_match(label, "obtain and maintain", "obtain or maintain") and \
+                    label_match(label, "clearance"):
+                return "eligible"
+            # Export-control "U.S. Person status" question with a REAL multi-option answer
+            # list (citizen/national vs green card vs refugee/asylee vs none). The label
+            # itself doesn't literally say "green card" (that's only in the OPTIONS, which
+            # aren't populated yet at rule-evaluation time for react-selects) — so distinguish
+            # by structure instead: this variant is a declarative "EXPORT CONTROLS -" preamble
+            # ending in a period, not a direct "are you a ...?" question ending in "?".
+            if label.strip().upper().startswith("EXPORT CONTROLS") and "?" not in label:
+                return "citizen"
+            # Bare Yes/No variants of the U.S. Person / export-control / clearance-adjacent
+            # access-requirement question (an explicit "...are you eligible/are you a...?"
+            # question, distinct from the declarative multi-option preamble above).
+            if label_match(label, "u.s. person", "export control", "clearance eligibility") and \
+                    label_match(label, "eligible to meet", "are you eligible", "are you a"):
+                return "Yes"
+            # Conflict-of-interest Yes/No screening question.
+            if label_match(label, "conflict of interest"):
+                return "No"
+            # "History with [Company]" bare Yes/No toggle — distinct from the more specific
+            # "have you ever been employed by [Company]" question (handled elsewhere), which
+            # some boards ask as a separate, more general "any history" checkbox.
+            if label_match(label, "history with") and not label_match(label, "employed by"):
+                return "No"
+            # "Top location preference" — a real dropdown of the company's actual office
+            # cities, no strong signal on which to prefer since the candidate is open to
+            # relocating anywhere (role_preferences.location_and_relocation_rule). Sentinel
+            # tells the executor to pick the first live-discovered option rather than leave
+            # a required field blank, same pattern as the engineering-preference sentinel.
+            if label_match(label, "location preference", "top location"):
+                return "__PICK_FIRST_OPTION__"
+            # Company-specific "engineering/team preference" ranked dropdowns (1st/2nd/3rd choice
+            # among role tracks). scan_fields never opens the dropdown, so `options` is empty
+            # at rule-evaluation time — the executor (gh_exec_react_select) discovers the real
+            # options live when it clicks the field. Returning a sentinel here (rather than None)
+            # ensures execute_answer still calls the executor; its own no-match fallback picks
+            # the first real option instead of leaving a required field blank.
+            if label_match(label, "engineering preference", "engineering profile", "team preference",
+                           "role preference") and label_match(label, "first", "second", "third",
+                           "1st", "2nd", "3rd"):
+                return "__PICK_FIRST_OPTION__"
+            # "Are you comfortable coming in N days a week to the office?" — plain Yes/No
+            # variant, distinct from Sigma's NYC/SF/London/Remote-only multi-choice below.
+            if re.search(r"\d+\s*days?\s+a\s+week", label, re.I) and label_match(label, "office", "comfortable"):
+                return "Yes"
             # Custom GH questions
             if label_match(label, "open to working", "onsite", "on site", "4 days"):
                 # Sigma: options are NYC / SF / London / Remote only
@@ -504,9 +745,61 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
                 return str(round(_ls_ft * _factor_ft))
             return str(COMP.get("baseline_target_pay", COMP.get("expected_base_salary", "120000")))
 
-        if label_match(label, "current company", "current employer", "employer name") \
+        if label_match(label, "current company", "current employer", "employer name",
+                       "current or previous employer") \
                 and "work" not in section and "experience" not in section:
             return WE[0]["company"] if WE else ""
+
+        if label_match(label, "current or previous job title", "current job title",
+                       "current or previous role", "current position"):
+            return WE[0]["role"] if WE else ""
+
+        # "Are you comfortable coming in N days a week to the office?" — plain Yes/No
+        # variant. Present here too (not just the isSelectInput branch above) since some
+        # Greenhouse boards render this as a plain text/react-select toggle rather than a
+        # dropdown — scan_fields' isSelectInput flag varies per board.
+        if re.search(r"\d+\s*days?\s+a\s+week", label, re.I) and label_match(label, "office", "comfortable"):
+            return "Yes"
+
+        # Open-ended "tell us about yourself / why are you a good fit" prose question.
+        # DeepSeek would normally tailor this to the listing; without it, a generic
+        # profile-based blurb still beats leaving a required field blank.
+        if label_match(label, "tell us a little bit about you", "why you would be a good fit",
+                       "why do you want to work", "why are you interested", "tell us about yourself"):
+            return generic_fit_blurb()
+
+        # "Where did you attend undergrad?" / "What did you get your undergrad degree in?"
+        # — answerable directly from EDU data (the Bachelor's entry, or the last EDU entry
+        # if none is explicitly marked "Graduated"). Matches "undergrad(uate)" tolerantly
+        # (e.g. via `re.search(r"under\s*gr?a[dt]")`) since real listings sometimes have
+        # typos in these custom questions (seen: "undergad" missing the second "r").
+        _undergrad_re = re.compile(r"under\s*gr?a[dt]", re.I)
+        if _undergrad_re.search(label) and label_match(label, "where", "school", "institution", "attend"):
+            _undergrad = next((e for e in EDU if "graduated" in e.get("current_status","").lower()),
+                              EDU[-1] if EDU else None)
+            return _undergrad["institution_variants"][0] if _undergrad else ""
+        if _undergrad_re.search(label) and label_match(label, "degree", "major", "get your", "study"):
+            _undergrad = next((e for e in EDU if "graduated" in e.get("current_status","").lower()),
+                              EDU[-1] if EDU else None)
+            return (_undergrad.get("major_search_term") or "") if _undergrad else ""
+
+        # Open-ended technical/experience questions this rules engine can't meaningfully
+        # tailor without DeepSeek. Several of these were manually answered by hand on a
+        # real listing (Wonderschool, 2026-07-21) — those real, specific answers are stored
+        # in library.json's prepared_answers and reused here for the same question shape.
+        # Anything not matching one of these specific shapes falls through to the generic,
+        # honest, profile-grounded blurb (still better than a blank required field, but
+        # DeepSeek would do meaningfully better here if available).
+        if label_match(label, "significant portion of your time", "significant amount of time",
+                       "working directly with customers"):
+            return PREPARED_ANSWERS.get("customer_facing_time_commitment") or generic_experience_blurb()
+        if label_match(label, "experience do you have using tools like", "claude code",
+                       "ai-assisted development"):
+            return PREPARED_ANSWERS.get("ai_dev_tool_experience") or generic_experience_blurb()
+        if label_match(label, "startup or founder experience"):
+            return PREPARED_ANSWERS.get("startup_founder_experience") or generic_experience_blurb()
+        if label_match(label, "describe a system you", "system you've built", "system you have built"):
+            return PREPARED_ANSWERS.get("system_you_built") or generic_experience_blurb()
 
         if label_match(label, "current visa status", "visa status", "work authorization status") \
                 and not field.get("isSelectInput"):
@@ -519,6 +812,16 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
             _rconn = _current_connection()
             if _rconn:
                 return _rconn.get("referral_contact") or _rconn.get("name", "")
+            return ""
+
+        # "If your school isn't listed above, let us know your school name here" — a fallback
+        # free-text field for when the school-selector dropdown lacks the candidate's
+        # institution. Leave blank: the real school was already matched and selected in the
+        # dropdown field, so this fallback isn't needed and must NOT receive the candidate's
+        # own name (its label contains the substring "name", which would otherwise fall
+        # through to the generic person-name handler below).
+        if label_match(label, "school name", "university name", "institution name",
+                       "know your school", "let us know your school"):
             return ""
 
         if label_match(label, "name") and "employee" not in label.lower() \
@@ -555,35 +858,77 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
                 return _primary
             return PI.get("city", "San Diego") + ", CA"  # fallback: home city
 
-        # Graduation context: check the field label OR the page/section context (e.g. question heading
-        # "Please input your anticipated graduation date" passed via context_hint/heading as `section`).
-        _grad_ctx = any(k in section or k in _context_hint_lower for k in
-                        ("graduation", "anticipated graduation", "expected graduation", "anticipated"))
-        # Graduation date FIRST — keyed off page context so bare Month/Day/Year fields still fire.
-        if _grad_ctx and label_match(label, "month", "day", "year"):
-            school = next((e for e in EDU if "attending" in e.get("current_status","").lower()), None)
-            if school:
-                if label_match(label, "month"): return MONTH_NUM.get(school.get("end_month","").lower(), "")
-                if label_match(label, "day"):   return "01"
-                if label_match(label, "year"):  return str(school.get("end_year",""))
-        # Keep old label-based graduation branch for edge cases where label includes "graduation".
-        if label_match(label, "graduation", "anticipated graduation", "expected graduation") and \
-                label_match(label, "month", "day", "year"):
-            school = next((e for e in EDU if "attending" in e.get("current_status","").lower()), None)
-            if school:
-                if label_match(label, "month"): return MONTH_NUM.get(school.get("end_month","").lower(), "")
-                if label_match(label, "day"):   return "01"
-                if label_match(label, "year"):  return str(school.get("end_year",""))
-        # Generic availability date — only when NOT a graduation page.
-        if not _grad_ctx and label_match(label, "month", "day", "year") and (
-            "application" in section or
-            not any(k in section for k in ("work","experience","education","school","self identify","signature"))
-        ):
-            import datetime
-            avail = datetime.date.today() + datetime.timedelta(weeks=2)
-            if label_match(label, "month"): return str(avail.month).zfill(2)
-            if label_match(label, "day"):   return str(avail.day).zfill(2)
-            if label_match(label, "year"):  return str(avail.year)
+        # Bare Month/Day/Year INPUT WIDGET detector — require the label (stripped of a
+        # trailing "*"/whitespace, and an optional "start"/"end"/"graduation"/"anticipated"
+        # prefix) to be ESSENTIALLY JUST the unit word itself ("Month", "Day", "Year",
+        # "Start date year", "Anticipated graduation month", etc.), not a bare substring
+        # match. A substring test alone false-positives on ordinary prose that happens to
+        # contain "day"/"month"/"year" — e.g. "Are you comfortable coming in 5 DAYS a week
+        # to the office?" — which would otherwise get a nonsensical day-of-month answer.
+        # `section` is NOT used as a signal here: confirmed unreliable on Greenhouse forms
+        # (scan_fields' getSection() often returns the PREVIOUS field's own label, not a
+        # real heading), so gating on section content is no safer than not gating at all.
+        # NOTE: previously gated behind `"education" in section or "school" in section or
+        # "degree" in section`. Confirmed on Greenhouse forms that `section` is unreliable —
+        # scan_fields' getSection() often returns the PREVIOUS field's own label (e.g.
+        # section='Phone' for a School/Start-date-year field), not a real "Education"
+        # heading, so that gate silently never passed and these handlers never fired. The
+        # label keywords below are specific enough to be safe unconditionally.
+        if label_match(label, "school", "institution", "university", "college"):
+            return EDU[0]["institution_variants"][0] if EDU else ""
+        if label_match(label, "major", "field of study", "discipline"):
+            return EDU[0]["major_variants"][0] if EDU else ""
+        if label_match(label, "gpa", "grade"):
+            return str(EDU[0].get("gpa","")) if EDU else ""
+
+        # Education Start/End Month+Year fields — MUST be checked before the generic bare
+        # Month/Day/Year fallback below (which would otherwise answer with "today + 2 weeks"
+        # instead of the candidate's actual degree dates). Match "start date month", "start
+        # date year", etc. — broader than a bare "start year"/"end year" substring, since
+        # Greenhouse commonly inserts "date" between the qualifier and the unit
+        # ("Start date year" does NOT contain "start year" as a substring).
+        _edu_start_field = re.match(r"^\s*start\s+(date\s+)?(month|year)\s*\*?\s*$", label.strip(), re.I)
+        _edu_end_field = re.match(r"^\s*end\s+(date\s+)?(month|year)\s*\*?\s*$", label.strip(), re.I)
+        if _edu_start_field and EDU:
+            if "month" in _edu_start_field.group(2):
+                return MONTH_NUM.get(EDU[0].get("start_month", "").lower(), "")
+            return str(EDU[0].get("start_year", ""))
+        if _edu_end_field and EDU:
+            if "month" in _edu_end_field.group(2):
+                return MONTH_NUM.get(EDU[0].get("end_month", "").lower(), "")
+            return str(EDU[0].get("end_year", ""))
+
+        # Bare Month/Day/Year INPUT WIDGET detector (graduation-date or generic availability-
+        # date fields) — require the label (stripped of a trailing "*"/whitespace, and an
+        # optional "start"/"end"/"graduation"/"anticipated" prefix) to be ESSENTIALLY JUST
+        # the unit word itself ("Month", "Day", "Year", "Anticipated graduation month",
+        # etc.), not a bare substring match. A substring test alone false-positives on
+        # ordinary prose that happens to contain "day"/"month"/"year" — e.g. "Are you
+        # comfortable coming in 5 DAYS a week to the office?" — which would otherwise get a
+        # nonsensical day-of-month answer. `section` is NOT used as a signal here: confirmed
+        # unreliable on Greenhouse forms (scan_fields' getSection() often returns the
+        # PREVIOUS field's own label, not a real heading), so gating on section content is
+        # no safer than not gating at all.
+        _bare_date_word = re.match(
+            r"^\s*(anticipated\s+)?(start\s+|end\s+|graduation\s+)?"
+            r"(date\s+)?(month|day|year)s?\s*\*?\s*$",
+            label.strip(), re.I)
+        if _bare_date_word:
+            _grad_ctx = any(k in label.lower() for k in ("graduation", "anticipated")) or \
+                        any(k in _context_hint_lower for k in
+                            ("graduation", "anticipated graduation", "expected graduation", "anticipated"))
+            if _grad_ctx:
+                school = next((e for e in EDU if "attending" in e.get("current_status","").lower()), None)
+                if school:
+                    if label_match(label, "month"): return MONTH_NUM.get(school.get("end_month","").lower(), "")
+                    if label_match(label, "day"):   return "01"
+                    if label_match(label, "year"):  return str(school.get("end_year",""))
+            else:
+                import datetime
+                avail = datetime.date.today() + datetime.timedelta(weeks=2)
+                if label_match(label, "month"): return str(avail.month).zfill(2)
+                if label_match(label, "day"):   return str(avail.day).zfill(2)
+                if label_match(label, "year"):  return str(avail.year)
 
         if "work" in section or "experience" in section or "employment" in section:
             if label_match(label, "company", "employer", "organization"):
@@ -603,19 +948,6 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
                 return WE[0].get("start_year","") if WE else ""
             if label_match(label, "end year"):
                 return WE[0].get("end_year","") if WE else ""
-
-        if "education" in section or "school" in section or "degree" in section:
-            if label_match(label, "school", "institution", "university", "college"):
-                return EDU[0]["institution_variants"][0] if EDU else ""
-            if label_match(label, "major", "field of study", "discipline"):
-                return EDU[0]["major_variants"][0] if EDU else ""
-            if label_match(label, "gpa", "grade"):
-                return str(EDU[0].get("gpa","")) if EDU else ""
-            # STEP 3: EDU start/end/graduation year text fields (from Workday lines 530-533)
-            if label_match(label, "start year"):
-                return EDU[0].get("start_year","") if EDU else ""
-            if label_match(label, "end year", "graduation year"):
-                return EDU[0].get("end_year","") if EDU else ""
 
         # Degree Major / Minor — fire even outside an "education" section context
         if label_match(label, "degree major", "degree minor"):
