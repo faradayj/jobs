@@ -637,6 +637,17 @@ def _write_report(job_url: str, status: str, fields_filled: int, fields_total: i
     print(f"  [report] Written → {report_path}")
 
 
+def _mark_applied(job_url: str):
+    """Mark this job Applied in data/jobs_tracker.csv after a confirmed successful submit.
+    Mirrors app_workday.py's post-submit tracker update (mark_applied_by_url) — lazy import,
+    non-fatal on failure so a tracker hiccup never masks a real, successful submission."""
+    try:
+        from job_tracker import mark_applied_by_url
+        mark_applied_by_url(job_url)
+    except Exception as e:
+        print(f"  [tracker] mark-applied failed (non-fatal): {e}")
+
+
 # ── Main applicator ───────────────────────────────────────────────────────────
 
 async def main(job_url: str, headed: bool = False):
@@ -927,6 +938,7 @@ async def main(job_url: str, headed: bool = False):
                     return
 
                 # Click submit
+                url_before_submit = page.url
                 submitted = await page.evaluate("""() => {
                     const btn = Array.from(document.querySelectorAll('button[type="submit"], input[type="submit"]'))
                         .find(b => /submit|apply/i.test(b.innerText || b.value || ''));
@@ -945,6 +957,28 @@ async def main(job_url: str, headed: bool = False):
                         const text = document.body.innerText.toLowerCase();
                         return /verification code|check your email|enter the code|confirm your email|one-time code|otp/.test(text);
                     }""")
+
+                    # A successful click does NOT mean the application actually went through —
+                    # Greenhouse can silently reject the click (client-side validation error,
+                    # invisible reCAPTCHA v3 scoring the bot-driven interaction as suspicious,
+                    # a disabled button) and the form just stays exactly as it was. Confirmed
+                    # happening in practice: a run reported "✓ Submitted!" while the
+                    # after-submit screenshot showed the identical unsubmitted form still on
+                    # screen, still under an active grecaptcha-badge. Require UNAMBIGUOUS
+                    # evidence of success — confirmation text or a URL change. Do NOT treat
+                    # "the form element seems gone" as evidence: on this exact failure mode
+                    # the <form> was still fully present, and a one-time synchronous read of
+                    # whether the submit button's text still matches "submit"/"apply" is easy
+                    # to catch mid-transient-relabel (e.g. a brief "Submitting..." state) and
+                    # produces a false positive even when the submission was actually rejected.
+                    recaptcha_present = await page.evaluate("""() => {
+                        return !!document.querySelector('.grecaptcha-badge, [class*="recaptcha"], iframe[src*="recaptcha"]');
+                    }""")
+                    actually_submitted = await page.evaluate("""() => {
+                        const text = document.body.innerText.toLowerCase();
+                        return /thank you for applying|application (has been |was )?(received|submitted)|we('ve| have) received your application|your application (has been|was) submitted/.test(text);
+                    }""") or page.url != url_before_submit
+
                     ss2 = ARTIFACTS / "gh_after_submit.png"
                     await page.screenshot(path=str(ss2), full_page=True)
 
@@ -969,9 +1003,37 @@ async def main(job_url: str, headed: bool = False):
                         await page.screenshot(path=str(ss3), full_page=True)
                         print(f"[GH] ✓ Confirmed by user. Screenshot → {ss3.name}")
                         _write_report(job_url, "submitted_after_verification", filled, len(fields))
+                        _mark_applied(job_url)
+                    elif not actually_submitted:
+                        _reason = ("this page has an active reCAPTCHA badge — invisible reCAPTCHA "
+                                   "v3 likely scored the bot-driven click as suspicious and Greenhouse "
+                                   "silently rejected the submission server-side") if recaptcha_present \
+                            else "a validation error or disabled button may have silently blocked it"
+                        print(f"[GH] ⚠ Clicked Submit, but the page shows NO confirmation and the "
+                              f"form is still present — the application likely did NOT go through "
+                              f"({_reason}). Screenshot → {ss2.name}")
+                        print("\n" + "="*60)
+                        print("  CHECK THE BROWSER WINDOW — look for a validation error or")
+                        print("  CAPTCHA, fix it, and click Submit yourself if needed.")
+                        print("  The browser stays open and waits here — take as long as you need.")
+                        print("  Press [Enter] once the application is fully submitted.")
+                        print("  Press Ctrl+C to abandon (this closes the browser without submitting).")
+                        print("="*60)
+                        try:
+                            await asyncio.to_thread(input, "")
+                        except (KeyboardInterrupt, EOFError):
+                            print("[GH] Cancelled — closing browser. Application may not be submitted.")
+                            _write_report(job_url, "cancelled_unconfirmed_submit", filled, len(fields))
+                            return
+                        ss3 = ARTIFACTS / "gh_after_verification.png"
+                        await page.screenshot(path=str(ss3), full_page=True)
+                        print(f"[GH] ✓ Confirmed by user. Screenshot → {ss3.name}")
+                        _write_report(job_url, "submitted_after_manual_confirmation", filled, len(fields))
+                        _mark_applied(job_url)
                     else:
                         print(f"[GH] ✓ Submitted! Screenshot → {ss2.name}")
                         _write_report(job_url, "submitted", filled, len(fields))
+                        _mark_applied(job_url)
                 else:
                     print("[GH] Could not find submit button — submit manually in the browser.")
                     _write_report(job_url, "submit_button_not_found", filled, len(fields))
