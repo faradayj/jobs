@@ -66,13 +66,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from app_common import _find_chrome, DATA_DIR
 
 # Force UTF-8 encoding on standard output/error
-if sys.platform == "win32":
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
-else:
+if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+
 
 # Load environment variables from .env file
 env_path = DATA_DIR / ".env"

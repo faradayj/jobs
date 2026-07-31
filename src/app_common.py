@@ -21,13 +21,11 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # ── Platform UTF-8 fix ────────────────────────────────────────────────────────
-if sys.platform == "win32":
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
-else:
-    sys.stdout.reconfigure(line_buffering=True)
-    sys.stderr.reconfigure(line_buffering=True)
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+
 
 REPO_ROOT     = Path(__file__).resolve().parent.parent   # src/ → repo root
 DATA_DIR      = REPO_ROOT / "data"
