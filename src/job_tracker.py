@@ -1293,9 +1293,10 @@ def detect_applicator(url: str) -> str | None:
         return str(base / "app_workday.py")
     if "greenhouse.io" in url or "gh_jid=" in url:
         return str(base / "app_greenhouse.py")
+    if "ashbyhq.com" in url:
+        return str(base / "app_ashby.py")
     # Add more handlers here as they are built:
     # if "lever.co" in url: return str(base / "app_lever.py")
-    # if "ashbyhq.com" in url: return str(base / "app_ashby.py")
     return None
 
 def run_apply_loop():

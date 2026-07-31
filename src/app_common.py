@@ -417,6 +417,14 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
         if label_match(label, "sponsor", "visa", "work authoriz"):
             want = "No" if not NEEDS_SPONSOR else "Yes"
             return fuzzy_pick(opts, want) or opts[0]
+        # "Unrestricted right to work" — checked BEFORE the generic
+        # "18/legal age/authorized/eligible" rule below, since that rule's bare "eligible"
+        # keyword doesn't reliably match this phrasing, and the blind default fallback at
+        # the end of this function (return "No") is actively wrong for this question —
+        # a U.S. citizen candidate DOES have unrestricted right to work.
+        if label_match(label, "unrestricted right to work", "right to work in the country",
+                       "right to work in the u"):
+            return fuzzy_pick(opts, "Yes") or opts[0]
         if label_match(label, "18", "legal age", "authorized", "eligible"):
             return fuzzy_pick(opts, "Yes") or opts[0]
         if label_match(label, "non-compete", "non compete", "agreement", "restrictive"):
@@ -428,10 +436,26 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
             return fuzzy_pick(opts, "Yes") or fuzzy_pick(opts, "I agree") or opts[0]
         return fuzzy_pick(opts, "No") or opts[0]
 
-    # ── Checkbox ─────────────────────────────────────────────────────────────
-    if ftype == "checkbox" or field.get("role") == "checkbox":
+    # ── Checkbox (and Ashby's visually-a-button-pair-but-semantically-a-checkbox
+    #    "yesno" widget — same true/false answer semantics, just rendered as two
+    #    <button>Yes</button>/<button>No</button> instead of a checkbox glyph) ──
+    if ftype in ("checkbox", "yesno") or field.get("role") in ("checkbox", "yesno"):
+        # "Are you based in the [Bay Area / NYC / etc]?" / "confirm you can work onsite"
+        # — candidate's home city determines truthfulness; check before the generic
+        # consent/acknowledge rule below so these aren't accidentally swept into it.
+        if label_match(label, "based in", "based near") and label_match(
+                label, "bay area", "san francisco", "sf ", "south san francisco"):
+            _city_l = PI.get("city", "").lower()
+            return "true" if any(k in _city_l for k in
+                                  ("san jose", "milpitas", "sunnyvale", "santa clara",
+                                   "san francisco", "oakland", "fremont", "palo alto",
+                                   "mountain view", "redwood city")) else "false"
+        if label_match(label, "confirm that you are able to work onsite", "confirm you are able to work onsite",
+                       "confirm that you can work onsite", "onsite, in person"):
+            return "true"
         if label_match(label, "consent", "agree", "terms", "condition", "certify",
-                       "verify", "accurate", "correct", "true and correct", "acknowledge"):
+                       "verify", "accurate", "correct", "true and correct", "acknowledge",
+                       "confirm", "please confirm"):
             return "true"
         if label_match(label, "preferred name"):
             return "false"
@@ -798,6 +822,12 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
             return PREPARED_ANSWERS.get("startup_founder_experience") or generic_experience_blurb()
         if label_match(label, "describe a system you", "system you've built", "system you have built"):
             return PREPARED_ANSWERS.get("system_you_built") or generic_experience_blurb()
+        # "Tell us about your experience/familiarity with [tech stack list]" — a generic
+        # skills-experience blurb naming the candidate's actual skills is a reasonable
+        # rules-only answer; unlike "which project resonates most" (below, deliberately
+        # left unanswered), this doesn't require reading company-specific listing content.
+        if label_match(label, "experience", "familiarity") and label_match(label, "following", "tech stack"):
+            return generic_experience_blurb()
 
         if label_match(label, "current visa status", "visa status", "work authorization status") \
                 and not field.get("isSelectInput"):
@@ -996,8 +1026,8 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
                        "quelle est la meilleure façon de vous contacter"):
             return f"Email: {PI.get('email','joshualingli@gmail.com')} | Phone: {PI.get('phone','(480) 616-8194')}"
 
-        if label_match(label, "are you open to relocation",
-                       "êtes-vous prêt à déménager"):
+        if label_match(label, "are you open to relocation", "willing to move to",
+                       "or willing to move", "êtes-vous prêt à déménager"):
             return "Yes — open to relocating anywhere in the United States or Canada."
 
         # Blue Origin: "why interested in Blue Origin" short-answer

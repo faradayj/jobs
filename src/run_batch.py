@@ -8,6 +8,7 @@ Usage:
     python3 src/run_batch.py                        # all P1 jobs with a known applicator
     python3 src/run_batch.py --ids 257 269 272      # specific job IDs
     python3 src/run_batch.py --start-id 257         # resume from a specific ID
+    python3 src/run_batch.py --host ashby           # only jobs routed to app_ashby.py
     python3 src/run_batch.py --sim-ds               # rule-based only (no DeepSeek); Workday only
 """
 import argparse
@@ -101,6 +102,9 @@ def main():
     parser = argparse.ArgumentParser(description="Batch applicator runner (Workday + Greenhouse)")
     parser.add_argument("--ids", nargs="+", type=int, help="Run only these job IDs")
     parser.add_argument("--start-id", type=int, help="Skip jobs before this ID")
+    parser.add_argument("--host", help="Run only jobs routed to this applicator, e.g. "
+                                        "'ashby', 'greenhouse', 'workday' (matches the "
+                                        "app_<host>.py script stem)")
     parser.add_argument("--sim-ds", action="store_true", help="Pass --sim-ds to the Workday bot (rule-based only; ignored for Greenhouse)")
     parser.add_argument("--dry-run", action="store_true", help="Print jobs list only, don't run")
     args = parser.parse_args()
@@ -112,6 +116,10 @@ def main():
         jobs = [j for j in jobs if j["ID"] in id_set]
     elif args.start_id:
         jobs = [j for j in jobs if int(j["ID"]) >= args.start_id]
+
+    if args.host:
+        want = f"app_{args.host.lower()}"
+        jobs = [j for j in jobs if Path(detect_applicator(j["Apply URL"]) or "").stem == want]
 
     if not jobs:
         print("[BATCH] No matching jobs found.")
