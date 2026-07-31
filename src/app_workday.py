@@ -53,14 +53,11 @@ from playwright.async_api import async_playwright, Page
 
 # Windows: prevent UnicodeEncodeError on emoji/special chars in log output
 # and enable line buffering so logs appear in real-time instead of at exit
-if sys.platform == "win32":
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
-else:
-    # Also force line buffering on Mac/Linux when piped (python -u flag helps but not always)
-    sys.stdout.reconfigure(line_buffering=True)
-    sys.stderr.reconfigure(line_buffering=True)
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+
 
 from app_common import (
     LIBRARY, PI, WE, EDU, LANG, RESUME_PATH,
@@ -3360,8 +3357,9 @@ async def main(job_url: str, headed: bool = False):
 
 if __name__ == "__main__":
     # Windows requires ProactorEventLoop for Playwright subprocess communication
-    if sys.platform == "win32":
+    if sys.platform == "win32" and sys.version_info < (3, 8):
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 
     args = sys.argv[1:]
     headed = "--show" in args
