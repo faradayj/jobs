@@ -27,7 +27,7 @@
       "Data Scientist",
       "Machine Learning Engineer"
     ],
-    "recent_work_context": "Training machine learning models based on onboarding graph linkage vector features.",
+    "recent_work_context": "Engineered identity graph ML pipelines on AWS SageMaker, automated fraud rule discovery beam searches across three product lines, and deployed daily production monitoring agents over Starburst (Trino) and Slack.",
     "anticipated_start_date_preference": "One month out from the current date",
     "location_and_relocation_rule": "The candidate is open to relocating anywhere in the United States or Canada. For any yes/no 'willing to relocate' question, answer Yes. For location-selection widgets, defer to routing_priorities.location_selection_execution_rule (multi-select location lists: select ALL options).",
     "work_arrangement_preference": "Open to onsite, hybrid, or remote — will accept whatever the role requires.",
@@ -114,7 +114,7 @@
       "end_month": "",
       "end_year": "",
       "current_status": "Currently work here",
-      "description": "Engineered a multi-objective NSGA-II genetic algorithm via Optuna to jointly optimize 15 production rules, processing 15,000 trials in 2 minutes and reducing manual referrals by 4.4% per quarter. Prototyped a KYC fraud detection system combining a Random Forest model (0.79 AUC), a NetworkX identity graph utilizing vectorized identity signals, and an agentic AI LiteLLM tool-calling loop to synthesize investigation tickets. Deployed an end-to-end AWS SageMaker batch ML pipeline utilizing graph-based fanout, achieving 99.5% recall and 94.5% precision on reachable fraud. Identified and resolved a portfolio-wide pipeline bug affecting 411,000 payment events across a 6 month window, enabling clean rule re-tuning. Developed automated KPI dashboards with Tableau, providing stakeholders with real-time visibility into fraud prevention trends, rule performance week-over-week, and loss prevention metrics."
+      "description": "Engineered a sequential adaptive-floor beam search to automate fraud rule discovery across three product lines, reducing manual referrals by 21% while increasing fraud detection recall to 99.3% and capturing $83K in additional fraudulent transactions. Developed a NetworkX identity graph on AWS SageMaker processing 90K organizations and 91K edges across 21 link vectors, achieving 93.5% precision and 99.4% recall via weekly automated retraining, which linked 231 of 1,645 fraud organizations to prohibited entities, identifying $213K of $660K of fraud in FY27 as preventable. Deployed daily production monitoring agents as scheduled SageMaker jobs over Starburst with Slack integration, leveraging Z-score anomaly detection with seasonal controls for dispute tracking and organization performance visibility."
     },
     {
       "company": "Single Particle LLC",
@@ -132,7 +132,7 @@
       "end_month": "October",
       "end_year": "2023",
       "current_status": "Ended",
-      "description": "Fine-tuned ChatGPT models for cryo-electron microscopy (cryoEM) workstations to improve AI-assisted scientific imaging workflows. Led the integration of AI capabilities into the company website, enabling direct user interaction with fine-tuned models for cryo-EM data analysis tasks."
+      "description": "Fine-tuned ChatGPT models for cryo-electron microscopy (cryoEM) workstations and led the integration of AI into the company website."
     },
     {
       "company": "Intel Corporation",
@@ -151,6 +151,19 @@
       "end_year": "2022",
       "current_status": "Ended",
       "description": "Engineered and rigorously tested data science workflows tailored to various industry sectors, enhancing team insights into workstation performance. Conducted extensive benchmarking of workflows by simulating real-world industry use cases using Python and Scikit-Learn, improving efficiency by 20%."
+    }
+  ],
+  "projects": [
+    {
+      "title": "Optimizing Training Cost for Scalable Graph Processing",
+      "organization": "UCSD, Qualcomm",
+      "technologies": [
+        "Python",
+        "PyTorch",
+        "NetworkX",
+        "CUDA"
+      ],
+      "description": "Worked closely with Qualcomm to develop a scalable graph-based learning pipeline to predict congestion in chip designs using the DE-HNN model. Processed 6 large-scale netlists (460k to 920k nodes) into bipartite graph structures, integrating spectral and structural features for demand prediction. Achieved 89.3% runtime reduction and 38.8% peak GPU memory savings. Delivered a final model with only a 6% average performance drop while dramatically lowering compute costs."
     }
   ],
   "personal_connections": {
@@ -282,7 +295,7 @@
     "Java",
     "JavaScript",
     "TypeScript",
-    "HTML",
+    "HTML/CSS",
     "MATLAB",
     "Pandas",
     "PyTorch",
@@ -294,6 +307,7 @@
     "Plotly",
     "Seaborn",
     "React",
+    "D3",
     "Flask",
     "Django",
     "Apache Spark",
@@ -303,12 +317,23 @@
     "PostgreSQL",
     "NoSQL",
     "MongoDB",
-    "Starburst",
+    "Starburst (Trino)",
+    "Trino",
     "Databricks",
     "Amazon Web Services",
+    "AWS (Sagemaker, S3)",
     "Google Cloud",
     "Docker",
     "Tableau",
+    "Git",
+    "GitHub",
+    "JSON",
+    "Microsoft Excel",
+    "Node.js",
+    "Data Visor",
+    "LiteLLM",
+    "Ollama",
+    "CUDA",
     "Machine Learning",
     "Data Science"
   ],
@@ -322,7 +347,7 @@
       "proficiency": "Intermediate"
     }
   ],
-  "resume_path": "data/resume_2026-06.pdf",
+  "resume_path": "data/resume_8-2026.pdf",
   "workday_accounts": {
     "cox": {
       "email": "joshualingli@gmail.com"
@@ -453,9 +478,9 @@
   ],
   "prepared_answers": {
     "_comment": "Manually written answers to open-ended Greenhouse questions the rules engine can't meaningfully tailor. Filled in after the fact when a real question was answered by hand (e.g. Wonderschool, 2026-07-21) — reused for similar-shaped questions on future listings instead of the generic placeholder blurb.",
-    "customer_facing_time_commitment": "Yes, absolutely. I see direct exposure to the people affected by my models as essential to building AI systems that actually work in the real world, not just in offline validation. At BILL, a big part of my role has been serving as the primary point of contact for explaining our fraud risk decisions to Product and Engineering teams, translating why the system flagged or acted on specific cases and turning their feedback into concrete rule and model improvements. That work is where a lot of my best ideas come from. For example, I identified and resolved a portfolio-wide pipeline bug affecting 411,000 payment events over a six-month window because I was close enough to how decisions played out in practice to catch it, which then enabled clean rule re-tuning. I also build automated KPI dashboards so stakeholders have real-time visibility into rule performance and loss trends, and I've prototyped an agentic AI loop that synthesizes fraud investigation tickets, which only works if you deeply understand the day-to-day of the people reviewing those cases. This kind of work appeals to me because I've consistently found that the strongest fraud strategy comes from tight feedback loops with the humans in the process, not from tuning in isolation. I'd welcome spending a significant share of my time closer to customers and support for exactly that reason.",
-    "ai_dev_tool_experience": "I work regularly with the Claude Code CLI as part of my day-to-day development workflow, including building and running custom agents to automate analysis and engineering tasks. I've used it for everything from co-working on code and debugging pipelines to orchestrating multi-step agentic workflows. I'm very comfortable integrating these AI-assisted environments into real production work rather than just experimenting with them.",
+    "customer_facing_time_commitment": "Yes, absolutely. I see direct exposure to the people affected by my models as essential to building AI systems that actually work in the real world, not just in offline validation. At BILL, a big part of my role has been serving as the primary point of contact for explaining our fraud risk decisions to Product and Engineering teams, translating why the system flagged or acted on specific cases and turning their feedback into concrete rule and model improvements. That work is where a lot of my best ideas come from. For example, I deployed daily production monitoring agents as scheduled SageMaker jobs over Starburst (Trino) with Slack integration, leveraging Z-score anomaly detection with seasonal controls for dispute tracking and organization performance visibility so stakeholders have real-time insight into fraud prevention trends. I also developed a NetworkX identity graph on AWS SageMaker processing 90K organizations and 91K edges across 21 link vectors, linking 231 fraud organizations to prohibited entities and identifying $213K of $660K of fraud in FY27 as preventable. This kind of work appeals to me because I've consistently found that the strongest fraud strategy comes from tight feedback loops with the humans in the process, not from tuning in isolation. I'd welcome spending a significant share of my time closer to customers and support for exactly that reason.",
+    "ai_dev_tool_experience": "I work regularly with AI CLI and agent workflows as part of my day-to-day development workflow, including building and running custom agents to automate analysis and engineering tasks. I've used it for everything from co-working on code and debugging pipelines to orchestrating multi-step agentic workflows. I'm very comfortable integrating these AI-assisted environments into real production work rather than just experimenting with them.",
     "startup_founder_experience": "I don't have formal founder experience, but I've thrived in startup-style environments where you own problems end-to-end. At Single Particle, an early-stage company, I went beyond my intern scope to lead the integration of AI into their website and tooling. At BILL I operate with a similar ownership mindset, independently building fraud detection systems from prototype to production and serving as the go-to person across Product and Engineering, so I'm very comfortable with the ambiguity and broad responsibility that comes with early-stage work.",
-    "system_you_built": "At BILL I built the Onboarding Linkage Shield, an end-to-end system that scores new I2G KYC/onboarding applications for fraud risk at sign-up, before any transaction history exists. It works by constructing an in-memory identity graph (~89K orgs, ~46K edges across 14 vector types like SSN, email, IP, device fingerprint, and address), running a Random Forest model over graph and vendor signals, and layering deterministic rules that hard-block obvious matches to confirmed fraud, then an LLM agent reads all three signals and writes an investigation ticket an analyst can act on in 30 seconds instead of 20 minutes. The key design decision was separating detection from narrative: the model, graph, and rules make the deterministic call, while the LLM only explains why the signals point to a fraud ring, since an AI shouldn't decide whether to block an org but is great at synthesizing evidence. I was deliberately rigorous about honesty, using time-based splits, bootstrap confidence intervals to confirm the graph added statistically significant lift, and an honestly-bounded recall ceiling, landing at a real 0.79 AUC with ~48% precision in the top-50 daily flags (a 3.6x lift over random review)."
+    "system_you_built": "At BILL I built an identity graph ML pipeline and automated fraud rule discovery system. The identity graph built on NetworkX and AWS SageMaker processes 90K organizations and 91K edges across 21 link vectors, achieving 93.5% precision and 99.4% recall via weekly automated retraining, which linked 231 of 1,645 fraud organizations to prohibited entities and identified $213K of $660K of fraud in FY27 as preventable. I also engineered a sequential adaptive-floor beam search to automate fraud rule discovery across three product lines, reducing manual referrals by 21% while increasing fraud detection recall to 99.3% and capturing $83K in additional fraudulent transactions. Finally, I deployed daily production monitoring agents over Starburst (Trino) with Slack integration to provide real-time visibility into dispute tracking and rule performance."
   }
 }
