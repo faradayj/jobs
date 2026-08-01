@@ -694,13 +694,38 @@ async def exec_selectinput(page: Page, field: dict, value: str):
         return False
 
     for term_idx, term in enumerate(terms):
-        # Clear any existing text and type the search term
-        await inp.click(click_count=3, force=True)
+        # Clear any existing text in input via JS & keyboard before typing
+        await page.evaluate("""(args) => {
+            let el;
+            if (args.rowScope) {
+                const row = document.querySelector(args.rowScope);
+                el = row?.querySelector('input[role="combobox"]') || row?.querySelector('input');
+            } else if (args.fid) {
+                el = document.getElementById(args.fid);
+            } else {
+                el = document.querySelector('[data-fill-idx="' + args.idx + '"]');
+            }
+            if (el) {
+                el.value = '';
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+        }""", {"rowScope": row_scope, "fid": fid, "idx": idx})
+        await page.wait_for_timeout(100)
+
+        # Focus, clear remaining text, and type search term
+        try:
+            await inp.click(click_count=3, force=True)
+            await inp.press("Control+a")
+            await inp.press("Backspace")
+        except Exception:
+            pass
+
         await inp.type(term, delay=70)
         await page.wait_for_timeout(SETTLE_MS)
 
         # Press Enter to trigger Workday's server-side search / auto-fill
         await inp.press("Enter")
+
 
         # --- Poll for pill OR visible results (mirrors the skills-path poll loop) ---
         # A single fixed wait misses Workday's async autofill when it lands late.

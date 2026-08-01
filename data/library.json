@@ -4,6 +4,7 @@
     "preferred_name": "Josh",
     "last_name": "Li",
     "email": "joshualingli@gmail.com",
+    "password": "ManekoNeki0!",
     "phone": "(480) 616-8194",
     "address": "800 S Abel St, Unit 506",
     "city": "Milpitas",
@@ -77,9 +78,12 @@
         "Bachelor's"
       ],
       "major_variants": [
+        "Data Science",
         "Computer Science",
         "Computer and Information Science",
-        "Data Science"
+        "Computer Science Engineering",
+        "Data Processing",
+        "Statistics"
       ],
       "major_search_term": "Data Science",
       "start_month": "September",
