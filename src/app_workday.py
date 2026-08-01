@@ -1288,8 +1288,18 @@ async def smart_fill_page(page: Page, heading: str, context_hint: str = "",
         if idx is None or not val: continue
         field = field_map.get(idx)
         if field:
+            lbl = field.get("label", "").strip("* ").lower()
+            if label_match(lbl, "major", "field of study", "discipline", "area of study"):
+                if EDU and "\n" not in str(val):
+                    primary_term = str(val).strip()
+                    all_variants = []
+                    for e in EDU:
+                        all_variants.extend(e.get("major_variants", []))
+                    fallbacks = list(dict.fromkeys([primary_term] + all_variants))
+                    val = "\n".join(t for t in fallbacks if t)
             await execute_answer(page, field, val)
             await page.wait_for_timeout(200)
+
 
     # Always execute date spinbuttons with rule-based values (even in DeepSeek mode)
     if DEEPSEEK_KEY and date_spinbuttons:
@@ -1841,6 +1851,18 @@ async def fill_add_dialog(page: Page, dialog_label: str, entry: dict = None, sec
                 val = rule_based_answer(f, dialog_label)
             if val:
                 answers.append({"index": f["index"], "value": val})
+
+        # For EDU entries, ensure major / field of study and school fields use entry_answer's
+        # structured multi-term fallback string so exec_selectinput can try fallback terms (e.g. Computer Science)
+        if entry and section_type == "edu":
+            for f in fillable:
+                lbl = f["label"].strip("* ").lower()
+                if label_match(lbl, "major", "field of study", "discipline", "area of study", "school", "institution", "university", "college"):
+                    e_val = entry_answer(f, entry, section_type)
+                    if e_val:
+                        answers = [a for a in answers if a.get("index") != f["index"]]
+                        answers.append({"index": f["index"], "value": e_val})
+
     elif entry and section_type:
         # Use entry-specific answers
         answers = []
@@ -1869,8 +1891,18 @@ async def fill_add_dialog(page: Page, dialog_label: str, entry: dict = None, sec
         if idx is None or not val: continue
         field = field_map.get(idx)
         if field and field.get("type") not in ("checkbox","radio") and field.get("role") not in ("checkbox","radio"):
+            lbl = field.get("label", "").strip("* ").lower()
+            if label_match(lbl, "major", "field of study", "discipline", "area of study"):
+                if EDU and "\n" not in str(val):
+                    primary_term = str(val).strip()
+                    all_variants = []
+                    for e in EDU:
+                        all_variants.extend(e.get("major_variants", []))
+                    fallbacks = list(dict.fromkeys([primary_term] + all_variants))
+                    val = "\n".join(t for t in fallbacks if t)
             await execute_answer(page, field, val)
             await page.wait_for_timeout(200)
+
 
     await page.wait_for_timeout(500)
     # For EDU inline forms with combobox fields (School, FoS), add extra settle time
