@@ -466,7 +466,16 @@ async def exec_text(page: Page, field: dict, value: str):
             "}", {"idx": idx, "fid": fid})
         await page.wait_for_timeout(SETTLE_MS)
 
+    try:
+        await el.click(click_count=3, force=True)
+    except Exception:
+        pass
     await el.fill(value)
+    try:
+        await el.press("Control+A")
+        await page.keyboard.type(str(value), delay=15)
+    except Exception:
+        pass
     # Trigger React synthetic events so React's internal state stays in sync with the DOM value
     await page.evaluate("(args) => { "
         "const el = document.querySelector('[data-fill-idx=\"' + args.idx + '\"]') "
@@ -2839,6 +2848,26 @@ async def handle_my_experience(page: Page):
                         await page.mouse.click(50, 50)
                         await page.wait_for_timeout(500)
                     edu_combobox_i += 1
+            # ── Re-fill empty text inputs (e.g. School or University) ──
+            school_text_fields = [rf for rf in retry_fields
+                                  if rf.get("tag") == "input"
+                                  and not rf.get("isSelectInput")
+                                  and label_match(rf.get("label","").lower(), "school", "university", "institution", "college")]
+            for st_i, st_f in enumerate(school_text_fields):
+                ent = EDU[st_i] if st_i < len(EDU) else (EDU[-1] if EDU else None)
+                if ent:
+                    cur_val = await page.evaluate("(args) => {"
+                        "const el = document.querySelector('[data-fill-idx=\"' + args.idx + '\"]') || document.getElementById(args.fid);"
+                        "return el ? el.value.trim() : '';"
+                        "}", {"idx": st_f.get("index"), "fid": st_f.get("id", "")})
+                    if not cur_val:
+                        s_name = ent.get("institution_variants", [""])[0]
+                        if s_name:
+                            st_f["page_heading"] = "My Experience"
+                            print(f"  [RETRY] Re-filling School text input [{st_i}] = {s_name!r}")
+                            await exec_text(page, st_f, s_name)
+                            await page.wait_for_timeout(300)
+
             # These can be reset when React re-renders after adding entries.
             empty_drops = [rf for rf in retry_fields
                            if rf.get("tag") == "button"
