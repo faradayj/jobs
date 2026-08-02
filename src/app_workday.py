@@ -72,9 +72,17 @@ from app_common import (
 ARTIFACTS = ARTIFACTS_DIR
 ARTIFACTS.mkdir(exist_ok=True)
 
+def normalize_workday_url(url: str) -> str:
+    """Normalize a Workday URL by converting locale prefixes (fr-CA, fr-FR, etc.) to en-US."""
+    if not url:
+        return url
+    return re.sub(r'(\.myworkdayjobs\.com/)(?:[a-z]{2}-[A-Z]{2}/)?', r'\1en-US/', url)
+
+
 # Async shim so existing await call sites work unchanged
 async def rule_based_fill_page(fields: list[dict], context_hint: str = "") -> list[dict]:
     return rule_based_fill_fields(fields, context_hint)
+
 
 
 # ── Workday-specific: skills pill picker via DeepSeek ────────────────────────
@@ -1022,15 +1030,30 @@ async def save_and_continue(page: Page) -> bool:
     """Click Save and Continue. Returns True if page advanced, False if validation error."""
     url_before = page.url
     heading_before = await get_heading(page)
-    clicked = await page.evaluate("""() => {
-        const btn = document.querySelector('[data-automation-id="pageFooterNextButton"]');
-        if (btn) { btn.click(); return true; }
-        return false;
-    }""")
+    
+    # Use Playwright native click first so React synthetic click listeners fire reliably
+    next_btn = page.locator("[data-automation-id='pageFooterNextButton']").first
+    clicked = False
+    if await next_btn.count():
+        try:
+            await next_btn.scroll_into_view_if_needed(timeout=3000)
+            await next_btn.click(timeout=3000)
+            clicked = True
+        except Exception:
+            pass
+
+    if not clicked:
+        clicked = await page.evaluate("""() => {
+            const btn = document.querySelector('[data-automation-id="pageFooterNextButton"]');
+            if (btn) { btn.click(); return true; }
+            return false;
+        }""")
+
     if not clicked:
         print(f"  [NAV] No Next button found — page may not be ready")
         await page.wait_for_timeout(2000)
         return False
+
     await page.wait_for_timeout(SAVE_MS)
     # Check for validation errors
     errors = await read_validation_errors(page)
@@ -1483,11 +1506,73 @@ async def ensure_signed_in(page: Page):
             print(f"[AUTH] Create account exception: {e}")
             return False
 
+    async def _do_linkedin_sign_in() -> bool:
+        """Attempt LinkedIn sign-in if LinkedIn button is present."""
+        linkedin_selectors = [
+            "[data-automation-id='linkedInSignInButton']",
+            "button:has-text('LinkedIn')",
+            "a:has-text('LinkedIn')",
+            "[aria-label*='LinkedIn']",
+            "[data-automation-id='identityProviderButton']",
+        ]
+        btn = None
+        for sel in linkedin_selectors:
+            loc = page.locator(sel).first
+            if await loc.count() and await loc.is_visible():
+                btn = loc
+                break
+        if not btn:
+            return False
+        print("[AUTH] Attempting Sign in with LinkedIn...")
+        try:
+            target_page = page
+            try:
+                async with page.context.expect_page(timeout=4000) as page_info:
+                    await btn.click(force=True)
+                target_page = await page_info.value
+                await target_page.wait_for_load_state("domcontentloaded")
+            except Exception:
+                await btn.click(force=True)
+                await page.wait_for_timeout(2500)
+
+            # Check for LinkedIn login form
+            user_input = target_page.locator("#username, input[name='session_key']").first
+            pass_input = target_page.locator("#password, input[name='session_password']").first
+            if await user_input.count():
+                await user_input.click(click_count=3)
+                await user_input.fill(use_email)
+                await pass_input.click(click_count=3)
+                await pass_input.fill(use_password)
+                await target_page.wait_for_timeout(300)
+                sub_btn = target_page.locator("button[type='submit'], .btn__primary--large").first
+                if await sub_btn.count():
+                    await sub_btn.click()
+                print("[AUTH] Submitted credentials on LinkedIn OAuth page...")
+                await page.wait_for_timeout(4000)
+
+            passed = await _wait_past_login(timeout_s=25)
+            if passed:
+                print("[AUTH] ✓ Signed in successfully via LinkedIn.")
+                return True
+        except Exception as e:
+            print(f"[AUTH] LinkedIn sign-in exception: {e}")
+        return False
+
     # ── Detect current state ──
     has_verify = await page.locator("[data-automation-id='verifyPassword']").count()
     has_create_btn = await page.locator("[data-automation-id='createAccountSubmitButton']").count()
     has_signin_btn = await page.locator("[data-automation-id='signInSubmitButton']").count()
     has_signin_link = await page.locator("[data-automation-id='signInLink']").count()
+
+    # Try LinkedIn sign-in first for RTX/globalhr or if LinkedIn button is explicitly present
+    has_linkedin_btn = any([await page.locator(sel).count() for sel in [
+        "[data-automation-id='linkedInSignInButton']",
+        "button:has-text('LinkedIn')",
+        "a:has-text('LinkedIn')",
+    ]])
+    if has_linkedin_btn or ("rtx" in tenant or "globalhr" in current_url):
+        if await _do_linkedin_sign_in():
+            return
 
     if has_verify and has_create_btn:
         # ── State A: Create-account form shown ──
@@ -1502,8 +1587,9 @@ async def ensure_signed_in(page: Page):
         if await page.locator("[data-automation-id='signInSubmitButton']").count():
             if await _do_sign_in():
                 return
+            if await _do_linkedin_sign_in():
+                return
             # Sign-in failed — no registered account yet.
-            # Switch back to Create Account form and ask user to complete it manually.
             print("[AUTH] ⚠ No existing account found.")
             ca_link = page.locator("[data-automation-id='createAccountLink']").first
             if await ca_link.count():
@@ -1513,6 +1599,8 @@ async def ensure_signed_in(page: Page):
     elif has_signin_btn and not has_verify:
         # ── State B: Sign-in form only ──
         if await _do_sign_in():
+            return
+        if await _do_linkedin_sign_in():
             return
         # Sign-in failed — switch to create account if link present
         if await page.locator("[data-automation-id='createAccountLink']").count():
@@ -2229,8 +2317,10 @@ async def handle_my_experience(page: Page):
 
     SECTION_MAP = {
         "work": ("work", WE), "experience": ("work", WE), "employment": ("work", WE),
+        "expérience": ("work", WE), "emplois": ("work", WE),
         "education": ("edu", EDU), "school": ("edu", EDU), "degree": ("edu", EDU),
-        "language": ("lang", LANG),
+        "formation": ("edu", EDU), "études": ("edu", EDU),
+        "language": ("lang", LANG), "langue": ("lang", LANG), "langues": ("lang", LANG),
     }
 
     # Process buttons in DOM order (Work Experience → Education → Languages)
@@ -3031,6 +3121,7 @@ async def _scrape_listing_salary(page: Page) -> str | None:
     return result
 
 async def main(job_url: str, headed: bool = False):
+    job_url = normalize_workday_url(job_url)
     mode = "DeepSeek" if DEEPSEEK_KEY else "rule-based fallback"
     key_hint = f"sk-...{DEEPSEEK_KEY[-4:]}" if DEEPSEEK_KEY else "NOT SET (add DEEPSEEK_API_KEY to data/.env)"
     print(f"[BOT] Workday Application Bot")

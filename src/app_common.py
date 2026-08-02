@@ -1755,10 +1755,13 @@ async def launch_browser(p, headed: bool, extra_args: list = None, extra_headers
     if CHROME_PATH:
         launch_kwargs["executable_path"] = CHROME_PATH
     browser = await p.chromium.launch(**launch_kwargs)
-    ctx_kwargs = dict(viewport={"width": 1280, "height": 900}, user_agent=USER_AGENT)
+    ctx_kwargs = dict(viewport={"width": 1280, "height": 900}, user_agent=USER_AGENT, locale="en-US")
+    headers = {"Accept-Language": "en-US,en;q=0.9"}
     if extra_headers:
-        ctx_kwargs["extra_http_headers"] = extra_headers
+        headers.update(extra_headers)
+    ctx_kwargs["extra_http_headers"] = headers
     context = await browser.new_context(**ctx_kwargs)
+
     await context.add_init_script(
         "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"
     )
