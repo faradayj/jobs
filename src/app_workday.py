@@ -479,7 +479,12 @@ async def exec_text(page: Page, field: dict, value: str):
         "} catch(e) {} "
         "el.dispatchEvent(new Event('input', {bubbles: true})); "
         "el.dispatchEvent(new Event('change', {bubbles: true})); "
+        "el.dispatchEvent(new Event('blur', {bubbles: true})); "
         "}", {"idx": idx, "fid": fid})
+    try:
+        await page.keyboard.press("Tab")
+    except Exception:
+        pass
 
     print(f"    ✓ text  [{idx}] {field['label']!r} = {value!r}")
 
