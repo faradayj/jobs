@@ -214,9 +214,18 @@ def import_csv_to_db():
 # --- 3. URL and HTML Scraping Helpers ---
 
 def clean_url(url):
-    """Remove simplify tracking parameters from a URL."""
+    """Remove tracking parameters, locale prefixes, and application action tails from a URL."""
     try:
         parsed = urlparse(url)
+        path = parsed.path
+
+        # 1. Remove Workday locale prefixes like /en-US/, /en-CA/, /fr-FR/
+        path = re.sub(r"^/(?:en|fr|es|de|ja|zh|pt|it)(?:-[A-Za-z]{2})?/", "/", path)
+
+        # 2. Remove Workday apply tails like /apply, /applyManually
+        path = re.sub(r"/apply(?:/applyManually|/autofillWithResume)?/?$", "", path)
+
+        # 3. Clean query string tracking params
         qsl = parse_qsl(parsed.query)
         cleaned_qsl = []
         tracking_params = {'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'ref', 'ref_id', 'click_id'}
@@ -224,7 +233,7 @@ def clean_url(url):
             if k.lower() not in tracking_params:
                 cleaned_qsl.append((k, v))
         cleaned_query = urlencode(cleaned_qsl)
-        return urlunparse(parsed._replace(query=cleaned_query))
+        return urlunparse(parsed._replace(path=path, query=cleaned_query)).rstrip("/")
     except Exception:
         return url
 
@@ -1240,9 +1249,17 @@ def set_status_by_url(url, status, date_applied=None):
             r.setdefault("Date Applied", "")
 
     matched = None
+    # Extract job ID / slug for fallback matching (e.g. _R1312947 or gh_jid=8615710002)
+    job_slug = target.split("/")[-1] if "/" in target else target
+    gh_jid_match = re.search(r"gh_jid=(\d+)", target)
+    gh_jid = gh_jid_match.group(1) if gh_jid_match else None
+
     for row in rows:
-        row_url = clean_url(row.get("Apply URL", ""))
-        if row_url == target or row.get("Apply URL", "") == url:
+        raw_url = row.get("Apply URL", "")
+        row_url = clean_url(raw_url)
+        if (row_url == target or raw_url == url or 
+            (job_slug and len(job_slug) > 5 and job_slug in row_url) or
+            (gh_jid and f"gh_jid={gh_jid}" in raw_url)):
             row["Status"] = status
             if date_applied is not None:
                 row["Date Applied"] = date_applied
@@ -1258,6 +1275,22 @@ def set_status_by_url(url, status, date_applied=None):
         writer = _csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
+
+    # Synchronize to SQLite DB if DB exists
+    if DB_PATH.exists():
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            if date_applied is not None:
+                cursor.execute("UPDATE jobs SET status = ?, date_applied = ? WHERE apply_url LIKE ?", 
+                               (status, date_applied, f"%{job_slug}%"))
+            else:
+                cursor.execute("UPDATE jobs SET status = ? WHERE apply_url LIKE ?", 
+                               (status, f"%{job_slug}%"))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
 
     return matched
 
