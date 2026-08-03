@@ -129,7 +129,7 @@ Given a list of form fields (with labels, types, and available options), return 
 
 Rules:
 - Use candidate profile to answer accurately and honestly.
-- "First Name" / "Last Name" / "Address" / "City" / "State" / "Zip" / "Phone" → use personal_info.
+- "First Name" / "Last Name" / "Address" / "City" / "State" / "Zip" / "Postal Code" / "Country" (in personal/contact address section) → use personal_info residence (United States of America), NEVER job listing location.
 - "How did you hear" → "LinkedIn" or closest available option.
 - Visa/sponsorship → use job_board_mappings.requires_visa_sponsorship.
 - Salary/compensation → use job_listing_salary if set (pick the range option closest to it); otherwise use compensation_rules.baseline_target_pay.
@@ -273,7 +273,7 @@ def pick_decline(opts: list[str]) -> str | None:
     return None
 
 def fuzzy_pick(opts: list[str], value: str) -> str | None:
-    """Fuzzy match value against options: exact → starts → contains (normalises apostrophes,
+    """Fuzzy match value against options: exact → exact normalized → starts → contains (normalises apostrophes,
     and treats hyphens/commas as equivalent word separators, e.g. "X - Y" == "X, Y")."""
     def _norm(s: str) -> str:
         s = re.sub(r"['‘’‚‛]", "", s.lower().strip())
@@ -283,9 +283,9 @@ def fuzzy_pick(opts: list[str], value: str) -> str | None:
     vn = _norm(value)
     for strategy in [
         lambda o: o.lower() == vl,
+        lambda o: _norm(o) == vn,
         lambda o: o.lower().startswith(vl) or vl.startswith(o.lower()),
         lambda o: vl in o.lower() or o.lower() in vl,
-        lambda o: _norm(o) == vn,
         lambda o: _norm(o).startswith(vn) or vn.startswith(_norm(o)),
         lambda o: vn in _norm(o) or _norm(o) in vn,
     ]:

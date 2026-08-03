@@ -537,7 +537,10 @@ async def exec_button_dropdown(page: Page, field: dict, value: str):
                 await page.wait_for_timeout(800)
             except Exception:
                 pass
-    match = fuzzy_pick(opts, value)
+    # Prioritize exact string match before fuzzy matching
+    match = next((o for o in opts if o.strip().lower() == value.strip().lower()), None)
+    if not match:
+        match = fuzzy_pick(opts, value)
     if not match:
         # Skip disabled "Select One" — fall back to first non-disabled option
         non_disabled = [o for o in opts if o.lower() not in ('select one', '')]
@@ -1326,6 +1329,8 @@ async def smart_fill_page(page: Page, heading: str, context_hint: str = "",
         field = field_map.get(idx)
         if field:
             lbl = field.get("label", "").strip("* ").lower()
+            if label_match(lbl, "country") and "phone" not in lbl:
+                val = PI.get("country", "United States of America")
             if label_match(lbl, "major", "field of study", "discipline", "area of study"):
                 if EDU and "\n" not in str(val):
                     primary_term = str(val).strip()
