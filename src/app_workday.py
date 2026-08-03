@@ -1330,6 +1330,10 @@ async def smart_fill_page(page: Page, heading: str, context_hint: str = "",
         if field:
             lbl = field.get("label", "").strip("* ").lower()
             if label_match(lbl, "country") and "phone" not in lbl:
+                curr_val = field.get("value", "").lower()
+                if "united states of america" in curr_val or "united states" in curr_val:
+                    print(f"    ✓ drop  [{field['index']}] 'Country' = 'United States of America' (already pre-filled)")
+                    continue
                 val = PI.get("country", "United States of America")
             if label_match(lbl, "major", "field of study", "discipline", "area of study"):
                 if EDU and "\n" not in str(val):
@@ -1392,6 +1396,9 @@ async def ensure_signed_in(page: Page):
         "[data-automation-id='signInSubmitButton']",
         "[data-automation-id='signInLink']",
         "[data-automation-id='createAccountSubmitButton']",
+        "[data-automation-id='LinkedInSignInButton']",
+        "[data-automation-id='linkedInSignInButton']",
+        "button:has-text('Sign in with LinkedIn')",
     ]
     is_login_wall = any([await page.locator(sel).count() > 0 for sel in LOGIN_SELECTORS])
     if not is_login_wall:
@@ -1526,48 +1533,57 @@ async def ensure_signed_in(page: Page):
             return False
 
     async def _do_linkedin_sign_in() -> bool:
-        """Attempt LinkedIn sign-in if LinkedIn button is present."""
+        """Attempt LinkedIn sign-in for RTX/OAuth portal."""
         linkedin_selectors = [
+            "[data-automation-id='LinkedInSignInButton']",
             "[data-automation-id='linkedInSignInButton']",
+            "button:has-text('Sign in with LinkedIn')",
             "button:has-text('LinkedIn')",
             "a:has-text('LinkedIn')",
             "[aria-label*='LinkedIn']",
-            "[data-automation-id='identityProviderButton']",
         ]
         btn = None
         for sel in linkedin_selectors:
             loc = page.locator(sel).first
-            if await loc.count() and await loc.is_visible():
-                btn = loc
-                break
+            try:
+                if await loc.count():
+                    await loc.wait_for(state="visible", timeout=6000)
+                    btn = loc
+                    break
+            except Exception:
+                pass
         if not btn:
             return False
         print("[AUTH] Attempting Sign in with LinkedIn...")
         try:
-            target_page = page
-            try:
-                async with page.context.expect_page(timeout=4000) as page_info:
-                    await btn.click(force=True)
-                target_page = await page_info.value
-                await target_page.wait_for_load_state("domcontentloaded")
-            except Exception:
-                await btn.click(force=True)
-                await page.wait_for_timeout(2500)
+            await btn.click(force=True)
+            await page.wait_for_timeout(4000)
 
-            # Check for LinkedIn login form
-            user_input = target_page.locator("#username, input[name='session_key']").first
-            pass_input = target_page.locator("#password, input[name='session_password']").first
-            if await user_input.count():
-                await user_input.click(click_count=3)
-                await user_input.fill(use_email)
-                await pass_input.click(click_count=3)
-                await pass_input.fill(use_password)
-                await target_page.wait_for_timeout(300)
-                sub_btn = target_page.locator("button[type='submit'], .btn__primary--large").first
-                if await sub_btn.count():
-                    await sub_btn.click()
-                print("[AUTH] Submitted credentials on LinkedIn OAuth page...")
-                await page.wait_for_timeout(4000)
+            # Check if navigated to LinkedIn OAuth login page
+            target_page = page
+            if "linkedin.com" not in page.url and len(page.context.pages) > 1:
+                target_page = page.context.pages[-1]
+
+            if "linkedin.com" in target_page.url:
+                print(f"[AUTH] On LinkedIn OAuth page ({target_page.url}) — filling credentials...")
+                user_input = target_page.locator("#username, input[name='session_key']").first
+                pass_input = target_page.locator("#password, input[name='session_password']").first
+                if await user_input.count():
+                    await user_input.click(click_count=3)
+                    await user_input.fill(use_email)
+                    await pass_input.click(click_count=3)
+                    await pass_input.fill(use_password)
+                    await target_page.wait_for_timeout(300)
+                    sub_btn = target_page.locator("button[type='submit']:has-text('Sign in'), button[type='submit'], .btn__primary--large").first
+                    if await sub_btn.count():
+                        await sub_btn.click()
+                    print("[AUTH] Submitted credentials on LinkedIn OAuth page...")
+
+                # Wait for navigation/redirect back to Workday
+                for _ in range(25):
+                    await page.wait_for_timeout(1000)
+                    if "myworkday" in page.url:
+                        break
 
             passed = await _wait_past_login(timeout_s=25)
             if passed:
@@ -1583,13 +1599,10 @@ async def ensure_signed_in(page: Page):
     has_signin_btn = await page.locator("[data-automation-id='signInSubmitButton']").count()
     has_signin_link = await page.locator("[data-automation-id='signInLink']").count()
 
-    # Try LinkedIn sign-in first for RTX/globalhr or if LinkedIn button is explicitly present
-    has_linkedin_btn = any([await page.locator(sel).count() for sel in [
-        "[data-automation-id='linkedInSignInButton']",
-        "button:has-text('LinkedIn')",
-        "a:has-text('LinkedIn')",
-    ]])
-    if has_linkedin_btn or ("rtx" in tenant or "globalhr" in current_url):
+    # Try LinkedIn sign-in strictly for RTX portals
+    is_rtx = "rtx" in current_url.lower() or "rec_rtx" in current_url.lower() or tenant in ("rec_rtx_ext_gateway", "globalhr", "rtx")
+    if is_rtx:
+        print("[AUTH] RTX portal detected — attempting LinkedIn OAuth sign-in...")
         if await _do_linkedin_sign_in():
             return
 
