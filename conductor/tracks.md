@@ -1,3 +1,3 @@
 # Tracks Registry
 
-*(No active tracks in progress. All completed tracks archived.)*
+- [~] **Track: Fix IXL Resume Upload & Education Combobox Selection** ([track-ixl-resume-edu-fix](./tracks/track-ixl-resume-edu-fix/index.md))
