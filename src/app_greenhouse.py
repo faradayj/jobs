@@ -206,7 +206,11 @@ async def scan_fields(page: Page) -> list[dict]:
             // Skip the hidden validation sentinel injected by GH's React-Select wrapper
             // (class contains "requiredInput" and tabindex="-1" with aria-hidden="true")
             if (el.getAttribute('aria-hidden') === 'true' && el.getAttribute('tabindex') === '-1') continue;
-            const isSelectInput = el.classList.contains('select__input');
+            const isSelectInput = el.classList.contains('select__input') ||
+                                  el.classList.contains('sf__input') ||
+                                  el.classList.contains('df__input') ||
+                                  el.getAttribute('role') === 'combobox' ||
+                                  (el.id && (el.id.includes('school') || el.id.includes('discipline')));
             el.dataset.ghIdx = idx;
             fields.push({
                 index:        idx++,
@@ -427,10 +431,9 @@ async def gh_exec_file(page: Page, resume_path: str, target=None):
         print(f"    ~ file  résumé not found: {resume_path!r}")
         return
     try:
-        file_input = target.locator('input[type="file"]').first
-        if not await file_input.is_visible(timeout=3000):
-            print("  [file] no file input visible — form may not be open")
-            # Continue anyway — do not abort the run
+        file_input = target.locator('input[type="file"][name="resume"], input[type="file"]').first
+        if await file_input.count() == 0:
+            print("  [file] no file input found on page")
         else:
             await file_input.set_input_files(resume_path)
             print(f"    ✓ file  Résumé uploaded: {Path(resume_path).name}")
@@ -545,8 +548,8 @@ async def gh_exec_react_select(page: Page, field: dict, value: str, target=None,
                 # Click the matching option element — scope to the currently-visible menu
                 # only (see _READ_VISIBLE_MENU_JS above: duplicated fields from "Add another"
                 # can leave multiple menu containers in the DOM at once).
-                visible_menu = target.locator(".select__menu-list:visible, [class*='select__menu']:visible").first
-                opt_loc = visible_menu.locator(".select__option, [class*='select__option']").filter(
+                visible_menu = target.locator(".select__menu-list:visible, [class*='select__menu']:visible, [class*='menu']:visible").first
+                opt_loc = visible_menu.locator("[class*='option'], .select__option, [id*='option']").filter(
                     has_text=best[:60]).first
                 if await opt_loc.count():
                     await opt_loc.click(timeout=3000)
@@ -554,7 +557,7 @@ async def gh_exec_react_select(page: Page, field: dict, value: str, target=None,
                     print(f"    ✓ rsel  [{idx}] {label!r} = {best!r}")
                     return best
             # Fallback: click first option (scoped to the visible menu, see above)
-            first_opt = target.locator("[class*='select__option']:visible").first
+            first_opt = target.locator("[class*='option']:visible, [id*='option']:visible").first
             if await first_opt.count():
                 first_text = await first_opt.inner_text()
                 await first_opt.click(timeout=3000)
