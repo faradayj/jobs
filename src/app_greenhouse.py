@@ -305,7 +305,15 @@ async def gh_exec_text(page: Page, field: dict, value: str, target=None):
     try:
         el = target.locator(f"[data-gh-idx='{idx}']").first
         await el.scroll_into_view_if_needed(timeout=5000)
-        await el.click(click_count=3, timeout=5000)
+        # Dismiss any open react-select popup overlay from previous field
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
+        try:
+            await el.click(click_count=3, timeout=3000)
+        except Exception:
+            await el.click(click_count=3, timeout=3000, force=True)
         await el.fill(value)
         print(f"    ✓ text  [{idx}] {field['label']!r} = {value!r}")
     except Exception as e:
@@ -675,7 +683,9 @@ async def main(job_url: str, headed: bool = False):
 
         async def _has_real_form() -> bool:
             try:
-                return await page.locator('input[type="file"]').first.is_visible(timeout=1500)
+                if await page.locator('input[type="text"], input[type="email"], input[name="first_name"], input[name="email"], input[name="last_name"]').first.is_visible(timeout=1500):
+                    return True
+                return (await page.locator('input[type="file"]').count()) > 0
             except Exception:
                 return False
 
@@ -717,34 +727,48 @@ async def main(job_url: str, headed: bool = False):
                     await page.wait_for_timeout(2000)
 
             if not await _has_real_form():
+                # Check for a plain "Apply" button or link that gates the form on company pages (e.g. IXL).
+                # MUST run before legacy embed endpoint guessing to avoid navigating away from valid company pages.
+                # NEVER click Quick Apply / MyGreenhouse / Autofill CTAs — those lead to a login wall.
+                for selector in [
+                    "a[href*='/apply']",
+                    "a[href*='apply']",
+                    "button:has-text(\"Apply\")",
+                    "a:has-text(\"Apply\")",
+                    "#apply_button",
+                    "a:has-text(\"Apply for this job\")",
+                    "a:has-text(\"Apply Now\")",
+                    "a:has-text(\"Apply now\")",
+                    "button:has-text(\"Apply now\")",
+                ]:
+                    try:
+                        btn = page.locator(selector).first
+                        if await btn.is_visible(timeout=1500):
+                            btn_text = ((await btn.inner_text(timeout=500)) or "").lower()
+                            if any(k in btn_text for k in ("quick apply", "mygreenhouse", "autofill")):
+                                continue
+                            print(f"[GH] Found apply element ({selector}) — clicking …")
+                            try:
+                                await asyncio.gather(
+                                    page.wait_for_navigation(timeout=15000, wait_until="domcontentloaded"),
+                                    btn.click(),
+                                    return_exceptions=True,
+                                )
+                            except Exception:
+                                await btn.click()
+                            await page.wait_for_timeout(2000)
+                            if await _has_real_form():
+                                break
+                    except Exception:
+                        pass
+
+            if not await _has_real_form():
                 token, gh_job_id = parse_greenhouse_token_and_job(job_url)
                 if token and gh_job_id:
                     embed_url = f"https://boards.greenhouse.io/embed/job_app?for={token}&token={gh_job_id}"
                     print(f"[GH] No form found — trying legacy embed endpoint (guessed token): {embed_url}")
                     await page.goto(embed_url, timeout=45000, wait_until="networkidle")
                     await page.wait_for_timeout(2000)
-
-            if not await _has_real_form():
-                # Last resort: a plain "Apply" button may still gate the form on some boards.
-                # NEVER click Quick Apply / MyGreenhouse / Autofill CTAs — those lead to a
-                # login wall, not a fillable form.
-                for selector in [
-                    "button:has-text(\"Apply\")",
-                    "#apply_button",
-                    "a:has-text(\"Apply for this job\")",
-                    "a:has-text(\"Apply Now\")",
-                ]:
-                    try:
-                        btn = page.locator(selector).first
-                        btn_text = ((await btn.inner_text(timeout=500)) or "").lower()
-                        if any(k in btn_text for k in ("quick apply", "mygreenhouse", "autofill")):
-                            continue
-                        if await btn.is_visible(timeout=2000):
-                            await btn.click()
-                            await page.wait_for_timeout(1500)
-                            break
-                    except Exception:
-                        pass
 
             # ── Step 2: Detect Greenhouse embed iframe ────────────────────────
             _frame = None
