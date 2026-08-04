@@ -212,7 +212,46 @@ async def deepseek_fill_page(fields: list[dict],
                       "messages": [{"role": "system", "content": SYSTEM_PROMPT},
                                    {"role": "user",   "content": prompt}]})
         raw = r.json()["choices"][0]["message"]["content"].strip()
-        m = re.search(r'\{.*\}', raw, re.DOTALL)
+        # Clean markdown code fences if present
+        cleaned = re.sub(r'```(?:json)?\s*', '', raw, flags=re.I)
+        cleaned = re.sub(r'```\s*$', '', cleaned).strip()
+
+        # Direct JSON parse first
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict) and "answers" in parsed:
+                return parsed["answers"]
+            if isinstance(parsed, list):
+                return parsed
+        except Exception:
+            pass
+
+        # Try raw_decode from first '[' or '{'
+        idx_brace = cleaned.find('{')
+        idx_bracket = cleaned.find('[')
+
+        if idx_bracket != -1 and (idx_brace == -1 or idx_bracket < idx_brace):
+            try:
+                arr, _ = json.JSONDecoder().raw_decode(cleaned[idx_bracket:])
+                if isinstance(arr, list):
+                    return arr
+            except Exception:
+                pass
+
+        if idx_brace != -1:
+            try:
+                obj, _ = json.JSONDecoder().raw_decode(cleaned[idx_brace:])
+                if isinstance(obj, dict):
+                    if "answers" in obj:
+                        return obj["answers"]
+                    if "index" in obj and "value" in obj:
+                        return [obj]
+                elif isinstance(obj, list):
+                    return obj
+            except Exception:
+                pass
+
+        m = re.search(r'\{\s*"answers"\s*:\s*\[.*?\]\s*\}', cleaned, re.DOTALL)
         if m:
             return json.loads(m.group()).get("answers", [])
     except Exception as e:
@@ -538,11 +577,19 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
                 return "false"
         return None
 
-    # ── Text / textarea / selectinput ────────────────────────────────────────
-    if tag in ("input", "textarea") or ftype in ("text", "email", "tel", "number"):
+    # ── Text / textarea / selectinput / button dropdowns ─────────────────────
+    if tag in ("input", "textarea", "button") or ftype in ("text", "email", "tel", "number", "button"):
 
-        if field.get("isSelectInput"):
-            # ── React-Select / Greenhouse combobox fields ──────────────────
+        if field.get("isSelectInput") or tag == "button" or ftype == "button" or opts:
+            # ── Dropdown / Combobox fields (React-Select & Workday button dropdowns) ──
+            if label_match(label, "citizen of the united states", "u.s. citizen", "us citizen", "united states citizen"):
+                return "Yes" if "Yes" in str(opts) else "citizen"
+            if label_match(label, "federal government", "civilian or military", "active duty"):
+                return "No"
+            if label_match(label, "independent auditor", "pricewaterhousecoopers", "pwc", "ernst & young", "ey", "kpmg", "deloitte"):
+                return "No"
+            if label_match(label, "politically exposed person"):
+                return "No"
             if label_match(label, "how did you hear", "source", "referral", "learn about"):
                 _hconn = _current_connection()
                 if _hconn and _hconn.get("works_at_company"):

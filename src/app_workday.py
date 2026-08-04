@@ -1309,6 +1309,13 @@ async def smart_fill_page(page: Page, heading: str, context_hint: str = "",
               f"({len(date_spinbuttons)} date spinbuttons handled by rules)...")
         answers = await deepseek_fill_page(non_date_fillable)
         print(f"  [LLM] Got {len(answers)} answers")
+        # Pre-fill rule-based answers for any fields that DeepSeek missed or didn't answer
+        _rule_ctx = context_hint or heading
+        rb_answers = await rule_based_fill_page(non_date_fillable, _rule_ctx)
+        answered_indices = {a.get("index") for a in answers if a.get("value")}
+        for rb in rb_answers:
+            if rb.get("index") not in answered_indices and rb.get("value"):
+                answers.append(rb)
     else:
         print(f"  [RULES] DeepSeek unavailable — using label-matching rules")
         # Enrich context_hint with graduation signal if page body text contains it,
