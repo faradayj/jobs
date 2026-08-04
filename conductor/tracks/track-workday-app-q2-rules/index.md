@@ -2,7 +2,7 @@
 
 ## Overview
 - **ID**: `track-workday-app-q2-rules`
-- **Status**: `[~]`
+- **Status**: `[x]`
 - **Spec**: [Specification](./spec.md)
 - **Plan**: [Implementation Plan](./plan.md)
 

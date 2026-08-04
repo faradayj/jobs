@@ -144,6 +144,12 @@ Rules:
 - Age 18+ / authorized to work → "Yes".
 - Non-compete / prior employment at this company → "No" unless profile says otherwise.
 - Security clearance: holds_security_clearance="No". NEVER select any option indicating a current clearance.
+- Credit hours completed / anticipated towards degree: return "30".
+- Student status / currently enrolled in degree program: return "Yes".
+- Current degree program: return "Masters" / "Master's Degree".
+- Cumulative GPA: return "3.5 or higher" (pick from options if available, else "4.0").
+- Conditional major: return "Computer Science".
+- Conditional permanent address: return "800 S Abel St, Unit 506, Milpitas, CA 95035, United States".
 - Open-ended text → concise honest answer from profile.
 - Skills fields → use the skills array; pick the closest matching option from available choices.
 - Language fields → use the languages array for language name and proficiency level.
@@ -405,7 +411,7 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
     exclude: optional set of option strings to skip (used for per-slot location dedup).
     """
     label   = field.get("label", "")
-    opts    = field.get("options", [])
+    opts    = field.get("options") or field.get("opts") or []
     section = (field.get("section") or field.get("page_heading") or context_hint).lower()
     # Also track context_hint separately so graduation signals passed from smart_fill_page
     # aren't overridden by a generic section heading like "Application Questions 2 of 2".
@@ -579,6 +585,22 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
 
     # ── Text / textarea / selectinput / button dropdowns ─────────────────────
     if tag in ("input", "textarea", "button") or ftype in ("text", "email", "tel", "number", "button"):
+
+        if label_match(label, "currently enrolled in a degree", "degree seeking program", "degree-seeking program"):
+            return "Yes"
+        if label_match(label, "credit hours towards your degree", "credit hours", "completed credit hours"):
+            return "30"
+        if label_match(label, "cumulative gpa", "overall gpa", "current gpa"):
+            if opts:
+                for _op in opts:
+                    if "3.5" in str(_op) or "higher" in str(_op).lower():
+                        return str(_op)
+                return "3.5 or higher"
+            return "4.0"
+        if label_match(label, "provide your major", "specify your major"):
+            return "Computer Science"
+        if label_match(label, "provide your permanent address", "specify your permanent address"):
+            return "800 S Abel St, Unit 506, Milpitas, CA 95035, United States"
 
         if field.get("isSelectInput") or tag == "button" or ftype == "button" or opts:
             # ── Dropdown / Combobox fields (React-Select & Workday button dropdowns) ──

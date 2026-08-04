@@ -60,6 +60,7 @@
       "end_month": "December",
       "end_year": "2026",
       "gpa": "4.0",
+      "anticipated_completed_credit_hours": "30",
       "current_status": "Still attending",
       "institution_city": "Tempe, AZ"
     },
@@ -411,9 +412,29 @@
       "notes": "Bot auto-extracts midpoint from listing page"
     },
     {
-      "question": "Are you currently enrolled as a student?",
+      "question": "Are you currently enrolled as a student / degree seeking program?",
       "answer": "Yes",
       "notes": "Enrolled in MS CS at ASU"
+    },
+    {
+      "question": "How many credit hours towards your degree do you anticipate having completed by the time you start this position?",
+      "answer": "30",
+      "notes": "Exact value: 30 credit hours"
+    },
+    {
+      "question": "What is your cumulative GPA?",
+      "answer": "3.5 or higher / 4.0",
+      "notes": "Pick '3.5 or higher' if options available, else 4.0"
+    },
+    {
+      "question": "If you answered Yes to enrolled in degree, please provide your major. Otherwise N/A.",
+      "answer": "Computer Science",
+      "notes": "Major is Computer Science"
+    },
+    {
+      "question": "If you answered Yes to enrolled in degree, please provide your permanent address. Otherwise N/A.",
+      "answer": "800 S Abel St, Unit 506, Milpitas, CA 95035, United States",
+      "notes": "Candidate permanent address"
     },
     {
       "question": "What is your highest level of education?",
