@@ -537,28 +537,41 @@ async def exec_button_dropdown(page: Page, field: dict, value: str):
                 await page.wait_for_timeout(800)
             except Exception:
                 pass
-    # Prioritize exact string match before fuzzy matching
-    match = next((o for o in opts if o.strip().lower() == value.strip().lower()), None)
+    # Build candidate terms (supports multiline priority lists, e.g. "How did you hear about us?")
+    terms = [t.strip() for t in value.split('\n') if t.strip()]
+    if label_match(label, "how did you hear", "source", "referral", "learn about"):
+        hear_fallbacks = ["LinkedIn", "Internet/Online Job Posting", "Online Job Board", "Job Board", "Indeed", "Social Media", "Company Website", "Careers Site", "Search Engine", "Internet Search", "Advertisement", "Other"]
+        for fb in hear_fallbacks:
+            if fb not in terms:
+                terms.append(fb)
+
+    non_disabled = [o for o in opts if o.lower() not in ('select one', '', 'select option')]
+
+    match = None
+    for term in terms:
+        # Exact match check first
+        match = next((o for o in opts if o.strip().lower() == term.lower()), None)
+        if not match:
+            match = fuzzy_pick(opts, term)
+        if match and match.lower() not in ('select one', ''):
+            break
+
     if not match:
-        match = fuzzy_pick(opts, value)
-    if not match:
-        # Skip disabled "Select One" — fall back to first non-disabled option
-        non_disabled = [o for o in opts if o.lower() not in ('select one', '')]
         if non_disabled:
-            match = fuzzy_pick(non_disabled, value)
-            if not match:
-                # D1b: for compliance/consent fields, prefer a decline option; for others use first
-                if label_match(label, "gender", "sex", "race", "ethnicity", "hispanic",
-                               "veteran", "disability"):
-                    decline = pick_decline(non_disabled)
-                    if decline:
-                        match = decline
-                    else:
-                        print(f"  [skip] compliance field has no matching option: {label!r}")
-                        await page.keyboard.press("Escape")
-                        return
+            # Check for 'Other' option
+            other_opt = next((o for o in non_disabled if "other" in o.lower()), None)
+            if label_match(label, "how did you hear", "source", "referral", "learn about") and other_opt:
+                match = other_opt
+            elif label_match(label, "gender", "sex", "race", "ethnicity", "hispanic", "veteran", "disability"):
+                decline = pick_decline(non_disabled)
+                if decline:
+                    match = decline
                 else:
-                    match = non_disabled[0]
+                    print(f"  [skip] compliance field has no matching option: {label!r}")
+                    await page.keyboard.press("Escape")
+                    return
+            else:
+                match = non_disabled[0]
         elif opts:
             match = opts[0]
     if match and match.lower() != 'select one':

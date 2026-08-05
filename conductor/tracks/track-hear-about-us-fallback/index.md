@@ -2,7 +2,7 @@
 
 ## Overview
 - **ID**: `track-hear-about-us-fallback`
-- **Status**: `[~]`
+- **Status**: `[x]`
 - **Spec**: [Specification](./spec.md)
 - **Plan**: [Implementation Plan](./plan.md)
 

@@ -628,8 +628,20 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
                     _ref_terms = _hconn.get("referral_source_terms",
                         ["I know someone at the company", "Employee Referral", "Referral"])
                     return "\n".join(_ref_terms)
-                hear_terms = JBM.get("hear_about_us_fallback_order",
-                    ["LinkedIn", "Internet/Online Job Posting", "Job Board", "Other"])
+                hear_terms = JBM.get("hear_about_us_fallback_order", [
+                    "LinkedIn",
+                    "Internet/Online Job Posting",
+                    "Online Job Board",
+                    "Job Board",
+                    "Indeed",
+                    "Social Media",
+                    "Company Website",
+                    "Careers Site",
+                    "Search Engine",
+                    "Internet Search",
+                    "Advertisement",
+                    "Other"
+                ])
                 return "\n".join(hear_terms)
             if label_match(label, "country") and not label_match(label, "phone"):
                 return "United States"
