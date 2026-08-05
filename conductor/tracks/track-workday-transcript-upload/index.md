@@ -2,7 +2,7 @@
 
 ## Overview
 - **ID**: `track-workday-transcript-upload`
-- **Status**: `[~]`
+- **Status**: `[x]`
 - **Spec**: [Specification](./spec.md)
 - **Plan**: [Implementation Plan](./plan.md)
 

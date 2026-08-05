@@ -71,6 +71,14 @@ else:
     _pdfs = list(DATA_DIR.glob("*.pdf"))
     RESUME_PATH = str(_pdfs[0].resolve()) if _pdfs else ""
 
+# Transcript: resolve to absolute path for set_input_files
+_transcript_rel = LIBRARY.get("transcript_path", "data/transcript.pdf")
+if _transcript_rel:
+    _tp = Path(_transcript_rel) if Path(_transcript_rel).is_absolute() else REPO_ROOT / _transcript_rel
+    TRANSCRIPT_PATH = str(_tp.resolve()) if _tp.exists() else ""
+else:
+    TRANSCRIPT_PATH = ""
+
 # User-agent matching platform so pages render correctly
 import platform as _plat
 _ua_os = {
@@ -587,6 +595,8 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
     if tag in ("input", "textarea", "button") or ftype in ("text", "email", "tel", "number", "button"):
 
         if label_match(label, "currently enrolled in a degree", "degree seeking program", "degree-seeking program"):
+            return "Yes"
+        if label_match(label, "upload your most recent transcript", "uploaded your transcript", "attached your transcript", "provide your transcript", "upload your transcript", "have you uploaded your transcript", "unofficial transcript", "official transcript", "attach your transcript", "transcript"):
             return "Yes"
         if label_match(label, "credit hours towards your degree", "credit hours", "completed credit hours"):
             return "30"

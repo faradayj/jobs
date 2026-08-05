@@ -60,7 +60,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 
 from app_common import (
-    LIBRARY, PI, WE, EDU, LANG, RESUME_PATH,
+    LIBRARY, PI, WE, EDU, LANG, RESUME_PATH, TRANSCRIPT_PATH,
     CHROME_PATH, EMAIL, PASSWORD, DEEPSEEK_KEY,
     PHONE_DIGITS, PROFILE_SUMMARY, SYSTEM_PROMPT,
     deepseek_fill_page, label_match, pick_decline, fuzzy_pick,
@@ -1204,6 +1204,69 @@ async def prefetch_options(page: Page, fields: list[dict]):
                 print(f"    [{f['index']:2}] opts {f['label']!r}: {opts[:5]}{'...' if len(opts)>5 else ''}")
             except Exception as e: print(f"  [prefetch] {e}")
 
+async def handle_document_uploads(page: Page):
+    """
+    Intelligently handles document uploads (Resume and Transcript).
+    Routes transcript-specific dropzones to TRANSCRIPT_PATH and resume dropzones to RESUME_PATH.
+    """
+    dropzone_info = await page.evaluate("""() => {
+        const results = [];
+        const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
+        const dzs = Array.from(document.querySelectorAll('[data-automation-id="file-upload-drop-zone"]'));
+        const allElements = Array.from(new Set([...inputs, ...dzs]));
+        for (const el of allElements) {
+            let parent = el.closest('fieldset, div[data-automation-id*="upload"], div[data-automation-id*="file"], section, div');
+            let text = parent ? parent.innerText.slice(0, 300).toLowerCase() : '';
+            results.push({
+                tag: el.tagName.toLowerCase(),
+                contextText: text
+            });
+        }
+        return results;
+    }""")
+
+    if not dropzone_info:
+        return
+
+    # Check existing uploaded files
+    existing_uploads = await page.evaluate("""() =>
+        Array.from(document.querySelectorAll('[data-automation-id="file-upload-item-name"]'))
+            .map(el => el.innerText.trim()).filter(Boolean)""")
+    existing_lower = [f.lower() for f in existing_uploads]
+
+    file_inputs = page.locator("input[type='file']")
+    if not await file_inputs.count():
+        try:
+            dz = page.locator("[data-automation-id='file-upload-drop-zone']").first
+            if await dz.count():
+                await dz.click()
+                await page.wait_for_timeout(800)
+        except Exception:
+            pass
+        file_inputs = page.locator("input[type='file']")
+
+    input_count = await file_inputs.count()
+    if not input_count:
+        return
+
+    for i in range(input_count):
+        inp = file_inputs.nth(i)
+        ctx_text = dropzone_info[i]["contextText"] if i < len(dropzone_info) else ""
+        
+        is_transcript_zone = any(k in ctx_text for k in ("transcript", "academic record", "school record", "grades", "mark sheet"))
+        is_resume_zone = any(k in ctx_text for k in ("resume", "cv", "curriculum vitae"))
+
+        if is_transcript_zone:
+            if TRANSCRIPT_PATH and not any("transcript" in f for f in existing_lower):
+                await inp.set_input_files(TRANSCRIPT_PATH)
+                await page.wait_for_timeout(2000)
+                print(f"    ✓ transcript uploaded ({TRANSCRIPT_PATH})")
+        elif is_resume_zone or not existing_uploads:
+            if RESUME_PATH and not any("resume" in f for f in existing_lower):
+                await inp.set_input_files(RESUME_PATH)
+                await page.wait_for_timeout(2000)
+                print(f"    ✓ resume uploaded ({RESUME_PATH})")
+
 # ── Smart page filler: DeepSeek primary, rule-based fallback ─────────────────
 
 async def smart_fill_page(page: Page, heading: str, context_hint: str = "",
@@ -1216,25 +1279,8 @@ async def smart_fill_page(page: Page, heading: str, context_hint: str = "",
     await page.evaluate("() => window.scrollTo(0, 0)")
     await page.wait_for_timeout(400)
 
-    # Attempt resume upload for any page that has a file-upload zone and no uploaded file yet.
-    # Some Workday tenants (e.g. FOX) place the resume upload on Application Questions, not My Experience.
-    _existing_uploads = await page.evaluate("""() =>
-        Array.from(document.querySelectorAll('[data-automation-id="file-upload-item-name"]'))
-            .map(el => el.innerText.trim()).filter(Boolean)""")
-    if not _existing_uploads:
-        _file_inp = page.locator("input[type='file']")
-        if not await _file_inp.count():
-            try:
-                _dz = page.locator("[data-automation-id='file-upload-drop-zone']").first
-                if await _dz.count():
-                    await _dz.click()
-                    await page.wait_for_timeout(800)
-            except Exception:
-                pass
-        if await _file_inp.count():
-            await _file_inp.first.set_input_files(RESUME_PATH)
-            await page.wait_for_timeout(2500)
-            print(f"    ✓ resume uploaded (smart_fill_page)")
+    # Handle document uploads (Resume and Transcript)
+    await handle_document_uploads(page)
 
     fields = await page.evaluate(SCAN_JS, None)
 
@@ -2341,28 +2387,8 @@ async def handle_my_experience(page: Page):
     # Resume upload — only if no file already uploaded.
     # Workday sometimes renders the file input only after interacting with the dropzone,
     # so try both: direct input[type=file] and dropzone-triggered approach.
-    existing_files = await page.evaluate("""() =>
-        Array.from(document.querySelectorAll('[data-automation-id="file-upload-item-name"]'))
-            .map(el => el.innerText.trim()).filter(Boolean)""")
-    if existing_files:
-        print(f"    ~ resume already uploaded: {existing_files[0]!r} — skipping")
-    else:
-        file_input = page.locator("input[type='file']")
-        if not await file_input.count():
-            # Dropzone may not inject the input until interacted with — click the zone first
-            try:
-                dropzone = page.locator("[data-automation-id='file-upload-drop-zone']").first
-                if await dropzone.count():
-                    await dropzone.click()
-                    await page.wait_for_timeout(800)
-            except Exception:
-                pass
-        if await file_input.count():
-            await file_input.first.set_input_files(RESUME_PATH)
-            await page.wait_for_timeout(2500)
-            print(f"    ✓ resume uploaded")
-        else:
-            print(f"    ~ no file input found — skipping resume upload")
+    # Handle document uploads (Resume and Transcript)
+    await handle_document_uploads(page)
 
     # Discover add-buttons and their section labels
     add_btns_info = await page.evaluate("""() =>
