@@ -2,7 +2,7 @@
 
 ## Overview
 - **ID**: `track-gm-selectinput-fallback`
-- **Status**: `[~]`
+- **Status**: `[x]`
 - **Spec**: [Specification](./spec.md)
 - **Plan**: [Implementation Plan](./plan.md)
 

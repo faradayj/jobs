@@ -606,6 +606,16 @@ async def exec_selectinput(page: Page, field: dict, value: str):
 
     # Support multi-term fallback: "Primary Term\nFallback1\nFallback2"
     terms = [t.strip() for t in value.split("\n") if t.strip()]
+    if label_match(field.get("label", ""), "how did you hear", "source", "referral", "learn about"):
+        hear_fallbacks = [
+            "LinkedIn", "Internet/Online Job Posting", "Online Job Board", "Job Board",
+            "Indeed", "Social Media", "Company Website", "Careers Website", "GM Careers",
+            "GM.com", "Search Engine", "Internet Search", "Advertisement", "Recruiter",
+            "Event", "Other"
+        ]
+        for fb in hear_fallbacks:
+            if fb not in terms:
+                terms.append(fb)
     if not terms:
         print(f"    ~ sel   [{idx}] {field['label']!r} — empty value")
         return
@@ -842,12 +852,22 @@ async def exec_selectinput(page: Page, field: dict, value: str):
                 await inp.press("Escape")
                 await page.wait_for_timeout(SETTLE_MS)
                 continue
-            # Last term exhausted with only unfiltered results — leave unset.
-            print(f"    ~ sel   [{idx}] {field['label']!r} — no term matched; leaving unset to avoid wrong pick")
-            await inp.press("Escape")
-            return
-
-        match = fuzzy_pick(results, term) or results[0]
+            # For 'How Did You Hear About Us?' fields, recover using keyword search on results instead of leaving unset
+            if label_match(field.get("label", ""), "how did you hear", "source", "referral", "learn about") and results:
+                kw_match = None
+                for kw in ("careers", "website", "social", "online", "recruiter", "board", "event", "other"):
+                    kw_match = next((r for r in results if kw in r.lower()), None)
+                    if kw_match:
+                        break
+                match = kw_match or results[0]
+                print(f"    ✓ sel   [{idx}] {field['label']!r} = {match!r} (hear_about_us keyword recovery)")
+            else:
+                # Last term exhausted with only unfiltered results — leave unset.
+                print(f"    ~ sel   [{idx}] {field['label']!r} — no term matched; leaving unset to avoid wrong pick")
+                await inp.press("Escape")
+                return
+        else:
+            match = fuzzy_pick(results, term) or results[0]
         match_text = match[:60]
         # Use Playwright locator click — React dropdowns ignore JS-injected MouseEvents
         opt_loc = (
