@@ -1403,6 +1403,10 @@ async def ensure_signed_in(page: Page):
         "[data-automation-id='signInSubmitButton']",
         "[data-automation-id='signInLink']",
         "[data-automation-id='createAccountSubmitButton']",
+        "[data-automation-id='SignInWithEmailButton']",
+        "[data-automation-id='signInWithEmailButton']",
+        "button:has-text('Sign in with email')",
+        "button:has-text('Sign in with Email')",
     ]
     current_url = page.url
     tenant = ""
@@ -1601,6 +1605,25 @@ async def ensure_signed_in(page: Page):
         except Exception as e:
             print(f"[AUTH] LinkedIn sign-in exception: {e}")
         return False
+
+    # ── Check for multi-option sign-in landing page (e.g. NVIDIA) ──
+    if not is_rtx:
+        email_option_selectors = [
+            "[data-automation-id='SignInWithEmailButton']",
+            "[data-automation-id='signInWithEmailButton']",
+            "button:has-text('Sign in with email')",
+            "button:has-text('Sign in with Email')",
+        ]
+        for sel in email_option_selectors:
+            loc = page.locator(sel).first
+            try:
+                if await loc.count() and await loc.is_visible():
+                    print(f"[AUTH] Multi-option sign-in page detected — clicking 'Sign in with email' ({sel})...")
+                    await loc.click(force=True)
+                    await page.wait_for_timeout(1500)
+                    break
+            except Exception:
+                pass
 
     # ── Detect current state ──
     has_verify = await page.locator("[data-automation-id='verifyPassword']").count()
