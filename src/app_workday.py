@@ -1403,20 +1403,22 @@ async def ensure_signed_in(page: Page):
         "[data-automation-id='signInSubmitButton']",
         "[data-automation-id='signInLink']",
         "[data-automation-id='createAccountSubmitButton']",
-        "[data-automation-id='LinkedInSignInButton']",
-        "[data-automation-id='linkedInSignInButton']",
-        "button:has-text('Sign in with LinkedIn')",
     ]
-    is_login_wall = any([await page.locator(sel).count() > 0 for sel in LOGIN_SELECTORS])
-    if not is_login_wall:
-        return
-
-    # Determine credentials — per-tenant first, fallback to personal_info
     current_url = page.url
     tenant = ""
     m = re.search(r'https://([^.]+)\.wd\d+\.myworkdayjobs\.com', current_url)
     if m:
         tenant = m.group(1)
+    is_rtx = "rtx" in current_url.lower() or "rec_rtx" in current_url.lower() or tenant in ("rec_rtx_ext_gateway", "globalhr", "rtx")
+    if is_rtx:
+        LOGIN_SELECTORS.extend([
+            "[data-automation-id='LinkedInSignInButton']",
+            "[data-automation-id='linkedInSignInButton']",
+            "button:has-text('Sign in with LinkedIn')",
+        ])
+    is_login_wall = any([await page.locator(sel).count() > 0 for sel in LOGIN_SELECTORS])
+    if not is_login_wall:
+        return
     workday_accounts = LIBRARY.get("workday_accounts", {})
     creds = workday_accounts.get(tenant) or workday_accounts.get("default") or {}
     use_email    = creds.get("email", EMAIL)
@@ -1607,7 +1609,6 @@ async def ensure_signed_in(page: Page):
     has_signin_link = await page.locator("[data-automation-id='signInLink']").count()
 
     # Try LinkedIn sign-in strictly for RTX portals
-    is_rtx = "rtx" in current_url.lower() or "rec_rtx" in current_url.lower() or tenant in ("rec_rtx_ext_gateway", "globalhr", "rtx")
     if is_rtx:
         print("[AUTH] RTX portal detected — attempting LinkedIn OAuth sign-in...")
         if await _do_linkedin_sign_in():
@@ -1626,7 +1627,7 @@ async def ensure_signed_in(page: Page):
         if await page.locator("[data-automation-id='signInSubmitButton']").count():
             if await _do_sign_in():
                 return
-            if await _do_linkedin_sign_in():
+            if is_rtx and await _do_linkedin_sign_in():
                 return
             # Sign-in failed — no registered account yet.
             print("[AUTH] ⚠ No existing account found.")
@@ -1639,7 +1640,7 @@ async def ensure_signed_in(page: Page):
         # ── State B: Sign-in form only ──
         if await _do_sign_in():
             return
-        if await _do_linkedin_sign_in():
+        if is_rtx and await _do_linkedin_sign_in():
             return
         # Sign-in failed — switch to create account if link present
         if await page.locator("[data-automation-id='createAccountLink']").count():
