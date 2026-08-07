@@ -542,8 +542,16 @@ async def gh_exec_react_select(page: Page, field: dict, value: str, target=None,
                 except (ValueError, TypeError):
                     pass
             if best is None and opts_text:
-                if label_match(label, "gender", "sex", "race", "ethnicity", "hispanic", "latino", "veteran", "disability"):
-                    best = pick_decline(opts_text)
+                if label_match(label, "gender", "sex"):
+                    best = fuzzy_pick(opts_text, "Male") or fuzzy_pick(opts_text, "Man")
+                elif label_match(label, "race", "ethnicity"):
+                    best = fuzzy_pick(opts_text, "Asian")
+                elif label_match(label, "hispanic", "latino"):
+                    best = fuzzy_pick(opts_text, "No")
+                elif label_match(label, "disability"):
+                    best = fuzzy_pick(opts_text, "No") or pick_decline(opts_text)
+                elif label_match(label, "veteran"):
+                    best = fuzzy_pick(opts_text, "not a protected veteran") or pick_decline(opts_text)
                 if not best:
                     candidates = [o for o in opts_text if o not in (avoid or set())] or opts_text
                     best = candidates[0]

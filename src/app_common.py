@@ -119,6 +119,12 @@ PROFILE_SUMMARY = json.dumps({
     "personal_info":            {k: v for k, v in PI.items() if k not in ("password",)},
     "work_experience":          WE,
     "education_history":        EDU,
+    "independent_and_capstone_projects": [
+        {
+            "title": "DE-HNN Graph-ML Chip Design Congestion Prediction (UC San Diego & Qualcomm Capstone)",
+            "description": "Built a graph-ML pipeline to predict chip-design congestion using the DE-HNN architecture for a UCSD capstone in collaboration with Qualcomm. Converted 6 production netlists (460k-920k nodes) into bipartite graphs, engineered spectral & structural node features in Python/NetworkX, and trained DE-HNN models in PyTorch with CUDA. Achieved an 89.3% reduction in training runtime and a 38.8% reduction in GPU memory usage compared to baseline."
+        }
+    ],
     "skills":                   LIBRARY.get("skills", []),
     "languages":                LANG,
     "role_preferences":         LIBRARY.get("role_preferences", {}),
@@ -141,14 +147,12 @@ Rules:
 - "How did you hear" → "LinkedIn" or closest available option.
 - Visa/sponsorship → use job_board_mappings.requires_visa_sponsorship.
 - Salary/compensation → use job_listing_salary if set (pick the range option closest to it); otherwise use compensation_rules.baseline_target_pay.
-- EEO fields (gender, sex, race, ethnicity, hispanic/latino, veteran) → check regulatory_self_identification.primary_demographic_action:
-    * If "Decline To Self Identify" → FIRST look for an explicit "prefer not to answer"/"decline"/"I do not want to answer"/"I do not wish to disclose" option and pick it.
-      If no such option exists AND the field label says "leave blank" → pick "Select One" (leave blank).
-      If no such option exists AND the field appears required (no blank/decline available) → use fallback_gender / fallback_race / fallback_hispanic_ethnicity from the profile.
-    * If a specific identity is given → use fallback_gender / fallback_race / fallback_hispanic_ethnicity from the profile.
-  The label will often say "Leave blank if you do not wish to declare" — this means the field is optional; picking "Select One" is valid.
-- Disability → use regulatory_self_identification.disability_answer.
-- Veteran status → use regulatory_self_identification.veteran_status_selection.
+- EEO fields (gender, sex, race, ethnicity, hispanic/latino, veteran, disability) → match the candidate's profile values:
+    * Race/Ethnicity: match fallback_race ("Asian").
+    * Gender/Sex: match fallback_gender ("Male" / "Man").
+    * Hispanic/Latino: match fallback_hispanic_ethnicity ("No").
+    * Veteran status: match veteran_status_selection ("I am not a protected veteran").
+    * Disability status: match disability_answer ("No" or "I do not have a disability").
 - Age 18+ / authorized to work → "Yes".
 - Non-compete / prior employment at this company → "No" unless profile says otherwise.
 - Security clearance: holds_security_clearance="No". NEVER select any option indicating a current clearance.
@@ -158,7 +162,10 @@ Rules:
 - Cumulative GPA: return "3.5 or higher" (pick from options if available, else "4.0").
 - Conditional major: return "Computer Science".
 - Conditional permanent address: return "800 S Abel St, Unit 506, Milpitas, CA 95035, United States".
-- Open-ended text → concise honest answer from profile.
+- Independent / Side / Non-internship project questions (e.g. "project you built on your own initiative", "outside of required schoolwork or an internship", "startup or open source") → reference the candidate's independent DE-HNN Graph-ML Chip Design Congestion Prediction capstone project (UCSD & Qualcomm, 460k-920k nodes, PyTorch, CUDA, NetworkX, 89.3% runtime reduction). Do NOT confuse independent projects with employment at BILL.
+- Bulleted format requests → when the label or context asks for "bullets", "a few bullets", or "bullet points", format your response cleanly as 3 to 4 concise bullet points (each starting with "- ").
+- Company product & operating principles questions → synthesize a compelling, tailored answer referencing real company products (e.g., for Samsara: AI Safety Dash Cams CM series or Vehicle Gateways VG series for real-time edge processing and fleet telematics) and operating principles (e.g., "Focus on Customer Impact", "Build for the Long Term").
+- Open-ended text → concise, impressive, profile-grounded answer.
 - Skills fields → use the skills array; pick the closest matching option from available choices.
 - Language fields → use the languages array for language name and proficiency level.
 - If filling a specific Work Experience / Education / Language entry, an "Entry Context" block
@@ -995,7 +1002,7 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
         # section='Phone' for a School/Start-date-year field), not a real "Education"
         # heading, so that gate silently never passed and these handlers never fired. The
         # label keywords below are specific enough to be safe unconditionally.
-        if label_match(label, "school", "institution", "university", "college"):
+        if label_match(label, "school", "institution", "university", "college") and not label_match(label, "schoolwork", "high school", "elementary school", "middle school", "primary school"):
             return EDU[0]["institution_variants"][0] if EDU else ""
         if label_match(label, "major", "field of study", "discipline"):
             return EDU[0]["major_variants"][0] if EDU else ""
