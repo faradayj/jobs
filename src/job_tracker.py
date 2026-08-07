@@ -78,7 +78,96 @@ load_dotenv(dotenv_path=env_path)
 
 DB_PATH = DATA_DIR / "jobs.db"
 PROFILE_PATH = DATA_DIR / "library.json"  # candidate profile (library.json)
+APPLIED_HISTORY_PATH = DATA_DIR / "applied_history.json"
 README_URL = "https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/README.md"
+
+def load_applied_manifest() -> dict:
+    if not APPLIED_HISTORY_PATH.exists():
+        return {}
+    try:
+        with open(APPLIED_HISTORY_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[!] Warning: Failed to load applied_history.json: {e}")
+        return {}
+
+def save_to_applied_manifest(url: str, company: str = "", role: str = "", date_applied: str = None):
+    import datetime as _dt
+    if not date_applied:
+        date_applied = _dt.date.today().isoformat()
+    manifest = load_applied_manifest()
+    c_url = clean_url(url)
+    manifest[c_url] = {
+        "raw_url": url,
+        "company": company,
+        "role": role,
+        "date_applied": date_applied,
+        "updated_at": _dt.datetime.now().isoformat()
+    }
+    try:
+        with open(APPLIED_HISTORY_PATH, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+        print(f"  [manifest] Saved {company or 'Job'} to persistent applied_history.json")
+    except Exception as e:
+        print(f"[!] Warning: Failed to write applied_history.json: {e}")
+
+def sync_applied_manifest():
+    """Enforce 'Applied' status across jobs_tracker.csv and jobs.db for all URLs in applied_history.json."""
+    manifest = load_applied_manifest()
+    if not manifest:
+        return
+
+    csv_path = DATA_DIR / "jobs_tracker.csv"
+    if not csv_path.exists():
+        return
+
+    import csv as _csv
+    with open(csv_path, "r", newline="", encoding="utf-8") as f:
+        reader = _csv.DictReader(f)
+        fieldnames = list(reader.fieldnames or [])
+        rows = list(reader)
+
+    if "Date Applied" not in fieldnames:
+        try:
+            idx = fieldnames.index("Date Evaluated") + 1
+        except ValueError:
+            idx = len(fieldnames) - 1
+        fieldnames.insert(idx, "Date Applied")
+
+    updated_count = 0
+    manifest_urls = set(manifest.keys())
+
+    for row in rows:
+        r_url = row.get("Apply URL", "")
+        c_r_url = clean_url(r_url)
+        matched_key = next((k for k in manifest_urls if k == c_r_url or k in r_url or c_r_url in k), None)
+        if matched_key:
+            entry = manifest[matched_key]
+            if row.get("Status") != "Applied":
+                row["Status"] = "Applied"
+                row["Date Applied"] = entry.get("date_applied", "")
+                updated_count += 1
+
+    if updated_count > 0:
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = _csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+        print(f"[+] Enforced {updated_count} Applied jobs from persistent manifest into jobs_tracker.csv.")
+
+    if DB_PATH.exists():
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            for key, entry in manifest.items():
+                cursor.execute(
+                    "UPDATE jobs SET status = 'Applied', date_applied = ? WHERE apply_url LIKE ? OR apply_url = ?",
+                    (entry.get("date_applied", ""), f"%{key}%", entry.get("raw_url", ""))
+                )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
 
 # --- 1. Data Classes ---
 
@@ -209,6 +298,7 @@ def import_csv_to_db():
             
     conn.commit()
     conn.close()
+    sync_applied_manifest()
     print(f"[+] DB Update: Imported all jobs from '{csv_path}'.")
 
 # --- 3. URL and HTML Scraping Helpers ---
@@ -768,6 +858,7 @@ def run_ingest():
     print(f"    - Added {new_jobs_count} new unique jobs.")
     print(f"    - Marked {closed_jobs_count} jobs as explicitly closed (lock symbol).")
     print(f"    - Marked {removed_count} jobs as closed/inactive (removed from Simplify list).")
+    sync_applied_manifest()
     export_db_to_csv()
 
 async def _scrape_job_description(url: str) -> str | None:
@@ -1198,7 +1289,7 @@ def mark_applied(job_id, date_str=None):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
-    cursor.execute("SELECT company, role FROM jobs WHERE id = ?", (job_id,))
+    cursor.execute("SELECT company, role, apply_url FROM jobs WHERE id = ?", (job_id,))
     job = cursor.fetchone()
     if not job:
         print(f"[ERROR] Job with ID {job_id} not found.")
@@ -1212,6 +1303,7 @@ def mark_applied(job_id, date_str=None):
     conn.commit()
     conn.close()
     print(f"[+] Successfully marked {job[0]} - {job[1]} as 'Applied' ({date_str}).")
+    save_to_applied_manifest(job[2], company=job[0], role=job[1], date_applied=date_str)
     export_db_to_csv()
 
 
@@ -1276,6 +1368,9 @@ def set_status_by_url(url, status, date_applied=None):
         writer.writeheader()
         writer.writerows(rows)
 
+    if status == "Applied" and matched:
+        save_to_applied_manifest(url, company=matched[0], role=matched[1], date_applied=date_applied)
+
     # Synchronize to SQLite DB if DB exists
     if DB_PATH.exists():
         try:
@@ -1306,7 +1401,35 @@ def mark_applied_by_url(url, date_str=None):
     matched = set_status_by_url(url, "Applied", date_applied=date_str)
     if matched:
         print(f"  [tracker] ✓ Marked {matched[0]} — {matched[1]} as Applied ({date_str}).")
+        save_to_applied_manifest(url, company=matched[0], role=matched[1], date_applied=date_str)
     return matched
+
+
+def mark_applied_by_search(query: str, date_str=None):
+    """Find jobs matching company/role query and mark as Applied."""
+    import datetime as _dt
+    if date_str is None:
+        date_str = _dt.date.today().isoformat()
+    if not DB_PATH.exists():
+        print("[*] Database file does not exist.")
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, company, role, apply_url FROM jobs WHERE company LIKE ? OR role LIKE ? OR apply_url LIKE ?",
+        (f"%{query}%", f"%{query}%", f"%{query}%")
+    )
+    matches = cursor.fetchall()
+    conn.close()
+
+    if not matches:
+        print(f"[!] No jobs found matching search query: {query!r}")
+        return
+
+    print(f"[*] Found {len(matches)} jobs matching {query!r}:")
+    for jid, comp, role, url in matches:
+        mark_applied_by_url(url, date_str=date_str)
 
 
 def mark_closed_expired_by_url(url):
@@ -1489,10 +1612,12 @@ def _reset_for_recheck(scope: str):
 
 def main():
     parser = argparse.ArgumentParser(description="Simplify Jobs Aggregator & Match Tracker")
-    parser.add_argument("action", choices=["ingest", "evaluate", "status", "list", "apply", "apply-loop", "csv"], help="Action to perform")
+    parser.add_argument("action", choices=["ingest", "evaluate", "status", "list", "apply", "mark-applied", "apply-loop", "csv"], help="Action to perform")
     parser.add_argument("--limit", type=int, default=10, help="Number of pending jobs to evaluate. Set to -1 to evaluate all pending. (default 10)")
     parser.add_argument("--priority", type=int, default=1, choices=[1, 2, 3], help="Priority level to list (default 1)")
-    parser.add_argument("--id", type=int, help="Job ID to mark as applied")
+    parser.add_argument("--id", type=int, nargs="+", help="Job ID(s) to mark as applied")
+    parser.add_argument("--url", type=str, nargs="+", help="Job URL(s) to mark as applied")
+    parser.add_argument("--search", type=str, help="Search query (company or role) to mark matching jobs as applied")
     parser.add_argument("--dry-run", action="store_true", help="For 'evaluate': scrape job descriptions only, skip DeepSeek LLM calls (validates pipeline)")
     parser.add_argument("--export-prompts", action="store_true", help="For 'evaluate': scrape pending jobs and export to artifacts/eval_pending.json for offline scoring (no LLM key needed)")
     parser.add_argument("--import-scores", action="store_true", help="For 'evaluate': import Claude-scored artifacts/eval_scores.json into the database")
@@ -1530,18 +1655,25 @@ def main():
             show_status()
         elif args.action == "list":
             list_priority_jobs(priority=args.priority)
-        elif args.action == "apply":
-            if not args.id:
-                print("[ERROR] Please specify a Job ID with --id to mark as applied.")
+        elif args.action in ("apply", "mark-applied"):
+            if args.url:
+                for u in args.url:
+                    mark_applied_by_url(u)
+            elif args.id:
+                for jid in args.id:
+                    mark_applied(jid)
+            elif args.search:
+                mark_applied_by_search(args.search)
+            else:
+                print("[ERROR] Please specify --url <URL>, --id <ID>, or --search <QUERY> with 'mark-applied'.")
                 sys.exit(1)
-            mark_applied(args.id)
         elif args.action == "apply-loop":
             run_apply_loop()
         elif args.action == "csv":
             export_db_to_csv()
     finally:
         # Export back to CSV if we ran an action that could modify or display the DB (excluding apply-loop and dry-run)
-        if args.action in ("ingest", "apply", "csv", "status") or (
+        if args.action in ("ingest", "apply", "mark-applied", "csv", "status") or (
                 args.action == "evaluate" and not args.dry_run and not args.export_prompts):
             export_db_to_csv()
             
