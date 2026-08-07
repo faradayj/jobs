@@ -2,7 +2,7 @@
 
 ## Overview
 - **ID**: `track-nvidia-multi-option-auth`
-- **Status**: `[~]`
+- **Status**: `[x]`
 - **Spec**: [Specification](./spec.md)
 - **Plan**: [Implementation Plan](./plan.md)
 

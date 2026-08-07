@@ -1692,6 +1692,12 @@ async def ensure_signed_in(page: Page):
             "[data-automation-id='signInWithEmailButton']",
             "button:has-text('Sign in with email')",
             "button:has-text('Sign in with Email')",
+            "button:has-text('Sign In with Email')",
+            "button:has-text('Sign in with email/password')",
+            "a:has-text('Sign in with email')",
+            "a:has-text('Sign in with Email')",
+            "[aria-label*='Sign in with email']",
+            "[aria-label*='Sign in with Email']",
         ]
         for sel in email_option_selectors:
             loc = page.locator(sel).first
@@ -1699,7 +1705,11 @@ async def ensure_signed_in(page: Page):
                 if await loc.count() and await loc.is_visible():
                     print(f"[AUTH] Multi-option sign-in page detected — clicking 'Sign in with email' ({sel})...")
                     await loc.click(force=True)
-                    await page.wait_for_timeout(1500)
+                    await page.wait_for_timeout(1000)
+                    try:
+                        await page.locator("[data-automation-id='email']").first.wait_for(state="visible", timeout=8000)
+                    except Exception:
+                        pass
                     break
             except Exception:
                 pass
