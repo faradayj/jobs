@@ -911,7 +911,9 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
             return PREPARED_ANSWERS.get("ai_dev_tool_experience") or generic_experience_blurb()
         if label_match(label, "startup or founder experience"):
             return PREPARED_ANSWERS.get("startup_founder_experience") or generic_experience_blurb()
-        if label_match(label, "describe a system you", "system you've built", "system you have built"):
+        if label_match(label, "describe a system you", "system you've built", "system you have built",
+                       "project you built", "built or led", "outside of required schoolwork",
+                       "startup, an open-source", "research idea"):
             return PREPARED_ANSWERS.get("system_you_built") or generic_experience_blurb()
         # "Tell us about your experience/familiarity with [tech stack list]" — a generic
         # skills-experience blurb naming the candidate's actual skills is a reasonable
@@ -1471,15 +1473,16 @@ def rule_based_answer(field: dict, context_hint: str = "", exclude: set = None) 
                 for kw in ["not a protected veteran", "not a veteran", "i am not", "i do not wish"]:
                     m = next((o for o in opts if kw in o.lower()), None)
                     if m: return m
+                return "I am not a protected veteran"
             if label_match(label, "gender", "sex"):
                 fb = REG.get("fallback_gender", "Male")
-                return fuzzy_pick(opts, fb) or next((o for o in opts if o.lower() not in ("select one","none")), None)
+                return fuzzy_pick(opts, fb) or fb
             if label_match(label, "hispanic", "latino"):
                 fb = "No" if REG.get("fallback_hispanic_ethnicity","No") in ("No", False, "false") else "Yes"
-                return fuzzy_pick(opts, fb)
+                return fuzzy_pick(opts, fb) or fb
             if label_match(label, "race", "ethnicity"):
-                return fuzzy_pick(opts, REG.get("fallback_race","Asian"))
-            return None
+                return fuzzy_pick(opts, REG.get("fallback_race","Asian")) or REG.get("fallback_race","Asian")
+            return "Decline to self-identify"
 
         if label_match(label, "how did you hear", "learn about") \
                 or (label_match(label, "source", "referral") and len(label) < 80):

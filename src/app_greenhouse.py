@@ -542,8 +542,11 @@ async def gh_exec_react_select(page: Page, field: dict, value: str, target=None,
                 except (ValueError, TypeError):
                     pass
             if best is None and opts_text:
-                candidates = [o for o in opts_text if o not in (avoid or set())] or opts_text
-                best = candidates[0]
+                if label_match(label, "gender", "sex", "race", "ethnicity", "hispanic", "latino", "veteran", "disability"):
+                    best = pick_decline(opts_text)
+                if not best:
+                    candidates = [o for o in opts_text if o not in (avoid or set())] or opts_text
+                    best = candidates[0]
             if best:
                 # Click the matching option element — scope to the currently-visible menu
                 # only (see _READ_VISIBLE_MENU_JS above: duplicated fields from "Add another"
@@ -694,7 +697,10 @@ async def main(job_url: str, headed: bool = False):
 
         try:
             print("[GH] Navigating to apply form …")
-            await page.goto(apply_url, timeout=45000, wait_until="networkidle")
+            try:
+                await page.goto(apply_url, timeout=25000, wait_until="domcontentloaded")
+            except Exception as e:
+                print(f"[GH] Initial goto notice: {e}")
             await page.wait_for_timeout(2000)
 
             # Some Greenhouse "Job Board with company branding" setups (e.g. Stripe) 302 the
@@ -709,7 +715,10 @@ async def main(job_url: str, headed: bool = False):
                 if apply_url != job_url:
                     print(f"[GH] No form at canonical URL (landed on {page.url}) "
                           f"— retrying with original URL …")
-                    await page.goto(job_url, timeout=45000, wait_until="networkidle")
+                    try:
+                        await page.goto(job_url, timeout=25000, wait_until="domcontentloaded")
+                    except Exception:
+                        pass
                     await page.wait_for_timeout(2000)
 
             # Many company career pages embed the real Greenhouse form via an iframe whose
@@ -726,7 +735,10 @@ async def main(job_url: str, headed: bool = False):
                     iframe_src = None
                 if iframe_src:
                     print(f"[GH] Found embedded Greenhouse iframe — navigating to its src: {iframe_src}")
-                    await page.goto(iframe_src, timeout=45000, wait_until="networkidle")
+                    try:
+                        await page.goto(iframe_src, timeout=25000, wait_until="domcontentloaded")
+                    except Exception:
+                        pass
                     await page.wait_for_timeout(2000)
 
             if not await _has_real_form():
@@ -770,7 +782,10 @@ async def main(job_url: str, headed: bool = False):
                 if token and gh_job_id:
                     embed_url = f"https://boards.greenhouse.io/embed/job_app?for={token}&token={gh_job_id}"
                     print(f"[GH] No form found — trying legacy embed endpoint (guessed token): {embed_url}")
-                    await page.goto(embed_url, timeout=45000, wait_until="networkidle")
+                    try:
+                        await page.goto(embed_url, timeout=25000, wait_until="domcontentloaded")
+                    except Exception:
+                        pass
                     await page.wait_for_timeout(2000)
 
             # ── Step 2: Detect Greenhouse embed iframe ────────────────────────
