@@ -119,12 +119,8 @@ PROFILE_SUMMARY = json.dumps({
     "personal_info":            {k: v for k, v in PI.items() if k not in ("password",)},
     "work_experience":          WE,
     "education_history":        EDU,
-    "independent_and_capstone_projects": [
-        {
-            "title": "DE-HNN Graph-ML Chip Design Congestion Prediction (UC San Diego & Qualcomm Capstone)",
-            "description": "Built a graph-ML pipeline to predict chip-design congestion using the DE-HNN architecture for a UCSD capstone in collaboration with Qualcomm. Converted 6 production netlists (460k-920k nodes) into bipartite graphs, engineered spectral & structural node features in Python/NetworkX, and trained DE-HNN models in PyTorch with CUDA. Achieved an 89.3% reduction in training runtime and a 38.8% reduction in GPU memory usage compared to baseline."
-        }
-    ],
+    "personal_projects":        LIBRARY.get("personal_projects", []),
+    "academic_capstone_projects": LIBRARY.get("projects", []),
     "skills":                   LIBRARY.get("skills", []),
     "languages":                LANG,
     "role_preferences":         LIBRARY.get("role_preferences", {}),
@@ -162,7 +158,7 @@ Rules:
 - Cumulative GPA: return "3.5 or higher" (pick from options if available, else "4.0").
 - Conditional major: return "Computer Science".
 - Conditional permanent address: return "800 S Abel St, Unit 506, Milpitas, CA 95035, United States".
-- Independent / Side / Non-internship project questions (e.g. "project you built on your own initiative", "outside of required schoolwork or an internship", "startup or open source") → reference the candidate's independent DE-HNN Graph-ML Chip Design Congestion Prediction capstone project (UCSD & Qualcomm, 460k-920k nodes, PyTorch, CUDA, NetworkX, 89.3% runtime reduction). Do NOT confuse independent projects with employment at BILL.
+- Independent / Side / Non-internship project questions (e.g. "project you built on your own initiative", "outside of required schoolwork or an internship", "startup or open source") → reference the candidate's Open-Source LLM Browser Automation Agent in personal_projects (built in Python with Playwright, Ollama, and LiteLLM to autonomously navigate multi-step web workflows without paid APIs). Do NOT use university capstones or employment at BILL.
 - Bulleted format requests → when the label or context asks for "bullets", "a few bullets", or "bullet points", format your response cleanly as 3 to 4 concise bullet points (each starting with "- ").
 - Company product & operating principles questions → synthesize a compelling, tailored answer referencing real company products (e.g., for Samsara: AI Safety Dash Cams CM series or Vehicle Gateways VG series for real-time edge processing and fleet telematics) and operating principles (e.g., "Focus on Customer Impact", "Build for the Long Term").
 - Open-ended text → concise, impressive, profile-grounded answer.

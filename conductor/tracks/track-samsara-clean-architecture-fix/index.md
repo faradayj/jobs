@@ -2,7 +2,7 @@
 
 ## Overview
 - **ID**: `track-samsara-clean-architecture-fix`
-- **Status**: `[~]`
+- **Status**: `[x]`
 - **Spec**: [Specification](./spec.md)
 - **Plan**: [Implementation Plan](./plan.md)
 

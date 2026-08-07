@@ -879,12 +879,18 @@ async def main(job_url: str, headed: bool = False):
                                      "start date", "start year", "end date", "end year")
                 edu_group_fields = [f for f in fields
                                     if label_match(f.get("label", ""), *_edu_field_labels)
-                                    and (f.get("isSelectInput") or f.get("type") == "number"
+                                    and not label_match(f.get("label", ""), "schoolwork", "project", "initiative")
+                                    and len(f.get("label", "")) < 60
+                                    and f.get("tag") != "textarea"
+                                    and (f.get("isSelectInput") or f.get("type") in ("number", "select", "text")
                                          or "start" in f.get("label", "").lower()
                                          or "end" in f.get("label", "").lower())]
 
                 def _is_school_field(f):
-                    return label_match(f.get("label", ""), "school", "institution", "university", "college")
+                    lbl = f.get("label", "")
+                    if label_match(lbl, "schoolwork", "project", "initiative") or len(lbl) >= 60 or f.get("tag") == "textarea":
+                        return False
+                    return label_match(lbl, "school", "institution", "university", "college")
 
                 # Split into blocks: each block starts at a School field and runs until the
                 # next School field (or end of list).
@@ -900,6 +906,12 @@ async def main(job_url: str, headed: bool = False):
                         break
                     entry = EDU[entry_idx]
                     for f in block:
+                        # IMMUTABILITY: Never overwrite an LLM answer or textarea with education defaults
+                        if DEEPSEEK_KEY and f["index"] in ds_indices:
+                            continue
+                        if f.get("tag") == "textarea":
+                            continue
+
                         lbl = f.get("label", "")
                         if _is_school_field(f):
                             answer_map[f["index"]] = entry["institution_variants"][0]

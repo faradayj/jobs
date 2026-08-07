@@ -167,6 +167,20 @@
       "description": "Worked closely with Qualcomm to develop a scalable graph-based learning pipeline to predict congestion in chip designs using the DE-HNN model. Processed 6 large-scale netlists (460k to 920k nodes) into bipartite graph structures, integrating spectral and structural features for demand prediction. Achieved 89.3% runtime reduction and 38.8% peak GPU memory savings. Delivered a final model with only a 6% average performance drop while dramatically lowering compute costs."
     }
   ],
+  "personal_projects": [
+    {
+      "title": "Open-Source LLM Browser Automation Agent",
+      "type": "Personal / Open-Source Side Project",
+      "technologies": [
+        "Python",
+        "Playwright",
+        "Ollama",
+        "LiteLLM",
+        "AsyncIO"
+      ],
+      "description": "Built an open-source browser automation agent that uses local LLMs (via Ollama and LiteLLM) to autonomously navigate multi-step web workflows, such as form-filling and data extraction, without relying on paid APIs. Designed the full architecture, wrote the Python pipeline, and integrated the model-routing layer myself, solving the problem of making LLM-driven web automation accessible and cost-free for developers."
+    }
+  ],
   "personal_connections": {
     "bcbsaz": {
       "company_aliases": ["blue cross blue shield of arizona", "bcbsaz", "az blue", "blue cross"],
