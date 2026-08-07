@@ -1241,6 +1241,7 @@ async def handle_document_uploads(page: Page):
     """
     Intelligently handles document uploads (Resume and Transcript).
     Routes transcript-specific dropzones to TRANSCRIPT_PATH and resume dropzones to RESUME_PATH.
+    Traverses parent containers to accurately classify dropzones based on section headers and labels.
     """
     dropzone_info = await page.evaluate("""() => {
         const results = [];
@@ -1248,11 +1249,18 @@ async def handle_document_uploads(page: Page):
         const dzs = Array.from(document.querySelectorAll('[data-automation-id="file-upload-drop-zone"]'));
         const allElements = Array.from(new Set([...inputs, ...dzs]));
         for (const el of allElements) {
-            let parent = el.closest('fieldset, div[data-automation-id*="upload"], div[data-automation-id*="file"], section, div');
-            let text = parent ? parent.innerText.slice(0, 300).toLowerCase() : '';
+            let text = '';
+            let curr = el;
+            for (let i = 0; i < 8; i++) {
+                if (!curr) break;
+                if (curr.innerText && curr.innerText.length > text.length) {
+                    text = curr.innerText;
+                }
+                curr = curr.parentElement;
+            }
             results.push({
                 tag: el.tagName.toLowerCase(),
-                contextText: text
+                contextText: text.toLowerCase()
             });
         }
         return results;
@@ -1282,19 +1290,22 @@ async def handle_document_uploads(page: Page):
     if not input_count:
         return
 
+    transcript_keywords = ("transcript", "academic record", "school record", "grades", "mark sheet", "education document", "diploma")
+    resume_keywords = ("resume", "cv", "curriculum vitae")
+
     for i in range(input_count):
         inp = file_inputs.nth(i)
         ctx_text = dropzone_info[i]["contextText"] if i < len(dropzone_info) else ""
         
-        is_transcript_zone = any(k in ctx_text for k in ("transcript", "academic record", "school record", "grades", "mark sheet"))
-        is_resume_zone = any(k in ctx_text for k in ("resume", "cv", "curriculum vitae"))
+        is_transcript_zone = any(k in ctx_text for k in transcript_keywords)
+        is_resume_zone = any(k in ctx_text for k in resume_keywords) and not is_transcript_zone
 
         if is_transcript_zone:
             if TRANSCRIPT_PATH and not any("transcript" in f for f in existing_lower):
                 await inp.set_input_files(TRANSCRIPT_PATH)
                 await page.wait_for_timeout(2000)
                 print(f"    ✓ transcript uploaded ({TRANSCRIPT_PATH})")
-        elif is_resume_zone or not existing_uploads:
+        elif is_resume_zone or (not is_transcript_zone and not existing_uploads and input_count == 1):
             if RESUME_PATH and not any("resume" in f for f in existing_lower):
                 await inp.set_input_files(RESUME_PATH)
                 await page.wait_for_timeout(2000)

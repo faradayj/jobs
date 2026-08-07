@@ -2,7 +2,7 @@
 
 ## Overview
 - **ID**: `track-ciena-transcript-dropzone-fix`
-- **Status**: `[~]`
+- **Status**: `[x]`
 - **Spec**: [Specification](./spec.md)
 - **Plan**: [Implementation Plan](./plan.md)
 
