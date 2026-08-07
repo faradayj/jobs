@@ -2151,6 +2151,14 @@ async def fill_add_dialog(page: Page, dialog_label: str, entry: dict = None, sec
                         all_variants.extend(e.get("major_variants", []))
                     fallbacks = list(dict.fromkeys([primary_term] + all_variants))
                     val = "\n".join(t for t in fallbacks if t)
+            elif label_match(lbl, "school", "university", "institution", "college"):
+                if EDU and "\n" not in str(val):
+                    primary_term = str(val).strip()
+                    all_variants = []
+                    for e in EDU:
+                        all_variants.extend(e.get("institution_variants", []))
+                    fallbacks = list(dict.fromkeys([primary_term] + all_variants))
+                    val = "\n".join(t for t in fallbacks if t)
             await execute_answer(page, field, val)
             await page.wait_for_timeout(200)
 
@@ -2960,7 +2968,7 @@ async def handle_my_experience(page: Page):
                     if search_val:
                         print(f"  [RETRY] Re-filling School combobox = {search_val!r}")
                         await exec_selectinput(page, cb_f, search_val)
-                        await page.keyboard.press("Escape")
+                        await page.keyboard.press("Tab")
                         await page.wait_for_timeout(500)
                     edu_combobox_i += 1
                 elif label_match(lbl_l, "major","field of study","discipline"):
@@ -2973,7 +2981,7 @@ async def handle_my_experience(page: Page):
                     if search_val:
                         print(f"  [RETRY] Re-filling FoS combobox = {search_val!r}")
                         await exec_selectinput(page, cb_f, search_val)
-                        await page.keyboard.press("Escape")
+                        await page.keyboard.press("Tab")
                         await page.mouse.click(50, 50)
                         await page.wait_for_timeout(500)
                     edu_combobox_i += 1
@@ -2995,6 +3003,7 @@ async def handle_my_experience(page: Page):
                             st_f["page_heading"] = "My Experience"
                             print(f"  [RETRY] Re-filling School text input [{st_i}] = {s_name!r}")
                             await exec_text(page, st_f, s_name)
+                            await page.keyboard.press("Tab")
                             await page.wait_for_timeout(300)
 
             # These can be reset when React re-renders after adding entries.

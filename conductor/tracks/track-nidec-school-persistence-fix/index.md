@@ -2,7 +2,7 @@
 
 ## Overview
 - **ID**: `track-nidec-school-persistence-fix`
-- **Status**: `[~]`
+- **Status**: `[x]`
 - **Spec**: [Specification](./spec.md)
 - **Plan**: [Implementation Plan](./plan.md)
 
