@@ -1,0 +1,129 @@
+%-------------------------
+% Resume in Latex - Amazon: Systems & Network SWE (Annapurna)
+%------------------------
+
+\documentclass[letterpaper,11pt]{article}
+
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\input{glyphtounicode}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\addtolength{\oddsidemargin}{-0.5in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1in}
+\addtolength{\topmargin}{-.5in}
+\addtolength{\textheight}{1.0in}
+\urlstyle{same}
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-5pt}]
+
+\pdfgentounicode=1
+
+\newcommand{\resumeItem}[1]{\item\small{{#1 \vspace{-2pt}}}}
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-2pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & #2 \\
+      \textit{\small#3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-7pt}
+}
+\newcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \small#1 & #2 \\
+    \end{tabular*}\vspace{-7pt}
+}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-5pt}}
+
+\begin{document}
+
+\begin{center}
+    \textbf{\Huge \scshape Joshua Li} \\ \vspace{1pt}
+    \small US Citizen $|$ (480) 616-8194 $|$ 
+    \href{mailto:joshualingli@gmail.com}{\underline{joshualingli@gmail.com}} $|$ 
+    \href{https://linkedin.com/in/joshualingli}{\underline{linkedin.com/in/joshualingli}} $|$
+    \href{https://github.com/faradayj}{\underline{github.com/faradayj}}
+\end{center}
+
+\section{Education}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Arizona State University}{Tempe, AZ}
+      {Master of Science in Computer Science (GPA: 4.0)}{Aug. 2025 -- Dec. 2026 (Expected)}
+    \resumeSubheading
+      {University of California, San Diego}{San Diego, CA}
+      {Bachelor of Science in Data Science (GPA: 3.9)}{Sept. 2021 -- Mar. 2025}
+  \resumeSubHeadingListEnd
+
+\section{Experience}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Software \& Systems Intern}{July 2023 -- Oct. 2023}
+      {Single Particle LLC}{San Diego, CA}
+      \resumeItemListStart
+        \resumeItem{Engineered systems integration tooling in Python and C++ to parse low-level hardware dependencies, networking specifications, and performance constraints for high-throughput imaging workstations.}
+        \resumeItem{Automated technical specification extraction, bridging the gap between hardware network interconnects and ML software requirements.}
+      \resumeItemListEnd
+
+    \resumeSubheading
+      {Data Science \& Systems Research Intern}{June 2022 -- Sept. 2022}
+      {Intel Corporation}{Folsom, CA}
+      \resumeItemListStart
+        \resumeItem{Developed simulation frameworks to benchmark network throughput, CPU/GPU memory scaling, and distributed computational bottlenecks across enterprise architectures.}
+        \resumeItem{Identified and mitigated core memory bandwidth limitations, improving overall pipeline processing efficiency by 20\%.}
+      \resumeItemListEnd
+
+    \resumeSubheading
+      {Software Engineer -- Data Systems}{Dec. 2025 -- Present}
+      {BILL}{San Jose, CA}
+      \resumeItemListStart
+        \resumeItem{Architected high-performance data processing pipelines and graph resolution networks on AWS, handling complex interconnect logic for 90K+ nodes and 91K+ edges with extremely low latency.}
+        \resumeItem{Designed rule induction engines utilizing adaptive-floor beam search algorithms, prioritizing time complexity and high throughput over massive (6-month) datasets.}
+        \resumeItem{Built and maintained backend ETL infrastructure utilizing Starburst (Trino) and AWS resources to monitor real-time metrics and system health.}
+      \resumeItemListEnd
+  \resumeSubHeadingListEnd
+
+\section{Projects}
+    \resumeSubHeadingListStart
+      \resumeProjectHeading
+          {\textbf{DE-HNN: Low-Level GPU Optimization for ML Networks} $|$ \emph{C++, CUDA, PyTorch}}{2024}
+          \resumeItemListStart
+            \resumeItem{Optimized low-level CUDA kernels and PyTorch routines for distributed graph neural network training, addressing strict VRAM and PCIe bandwidth constraints across 6 large-scale topological datasets.}
+            \resumeItem{Engineered memory pruning and automated layer stopping techniques that drastically cut training latency by 89\% and reduced peak memory utilization by 38\% without significant loss in throughput quality.}
+          \resumeItemListEnd
+    \resumeSubHeadingListEnd
+
+\section{Technical Skills}
+ \begin{itemize}[leftmargin=0.15in, label={}]
+    \small{\item{
+     \textbf{Languages}{: C, C++, Python, Java, SQL, Bash} \\
+     \textbf{Systems \& Network}{: Linux Kernel/OS fundamentals, Network Interconnects, Performance Benchmarking, Memory Scaling, Distributed Computing} \\
+     \textbf{Infrastructure}{: AWS (EC2, S3), Docker, Git, CI/CD, Trino, Databricks} \\
+     \textbf{Hardware/ML Intersect}{: CUDA, PyTorch Optimization, Memory Bandwidth Tuning, Multi-GPU Scaling}
+    }}
+ \end{itemize}
+
+\end{document}

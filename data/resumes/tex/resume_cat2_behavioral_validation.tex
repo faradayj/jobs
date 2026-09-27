@@ -1,0 +1,129 @@
+%-------------------------
+% Resume in Latex - Category 2: Autonomy Behavioral Validation & Metrics
+%------------------------
+
+\documentclass[letterpaper,11pt]{article}
+
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\input{glyphtounicode}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\addtolength{\oddsidemargin}{-0.5in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1in}
+\addtolength{\topmargin}{-.5in}
+\addtolength{\textheight}{1.0in}
+\urlstyle{same}
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-5pt}]
+
+\pdfgentounicode=1
+
+\newcommand{\resumeItem}[1]{\item\small{{#1 \vspace{-2pt}}}}
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-2pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & #2 \\
+      \textit{\small#3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-7pt}
+}
+\newcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \small#1 & #2 \\
+    \end{tabular*}\vspace{-7pt}
+}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-5pt}}
+
+\begin{document}
+
+\begin{center}
+    \textbf{\Huge \scshape Joshua Li} \\ \vspace{1pt}
+    \small US Citizen $|$ (480) 616-8194 $|$ 
+    \href{mailto:joshualingli@gmail.com}{\underline{joshualingli@gmail.com}} $|$ 
+    \href{https://linkedin.com/in/joshualingli}{\underline{linkedin.com/in/joshualingli}} $|$
+    \href{https://github.com/faradayj}{\underline{github.com/faradayj}}
+\end{center}
+
+\section{Education}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Arizona State University}{Tempe, AZ}
+      {Master of Science in Computer Science (GPA: 4.0)}{Aug. 2025 -- Dec. 2026 (Expected)}
+    \resumeSubheading
+      {University of California, San Diego}{San Diego, CA}
+      {Bachelor of Science in Data Science (GPA: 3.9)}{Sept. 2021 -- Mar. 2025}
+  \resumeSubHeadingListEnd
+
+\section{Experience}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Associate Data Scientist -- Analytics \& Behavior Monitoring}{Dec. 2025 -- Present}
+      {BILL}{San Jose, CA}
+      \resumeItemListStart
+        \resumeItem{Established the centralized analytical source of truth by authoring complex distributed SQL queries in Starburst/Trino over multi-terabyte federated tables.}
+        \resumeItem{Deployed scheduled daily AWS SageMaker monitoring jobs to perform Z-score statistical anomaly detection with seasonal controls for volume drift and behavioral exposure rates.}
+        \resumeItem{Built 8 production KPI dashboards in Tableau and DataVisor with calculated fields and dynamic aggregations to visualize drift and provide real-time risk visibility for cross-functional stakeholders.}
+        \resumeItem{Engineered an automated data mining engine using adaptive-floor beam search over 6-month rolling datasets, increasing analytical precision by 1.5x and recall to 99.3\%.}
+        \resumeItem{Architected an agentic LLM triage pipeline to automatically generate structural summaries of flagged anomalies, reducing manual incident review pipelines by 21\%.}
+      \resumeItemListEnd
+
+    \resumeSubheading
+      {Software \& Systems Intern}{July 2023 -- Oct. 2023}
+      {Single Particle LLC}{San Diego, CA}
+      \resumeItemListStart
+        \resumeItem{Developed an interactive conversational interface for the company website to automate requirement gathering, integrating frontend systems with prompt-engineered analytical extraction pipelines.}
+      \resumeItemListEnd
+
+    \resumeSubheading
+      {Data Science \& Systems Research Intern}{June 2022 -- Sept. 2022}
+      {Intel Corporation}{Folsom, CA}
+      \resumeItemListStart
+        \resumeItem{Researched sector-specific data science workflows to simulate real-world ML computational pipelines, identifying hardware bottlenecks and improving benchmarked pipeline efficiency by 20\%.}
+      \resumeItemListEnd
+  \resumeSubHeadingListEnd
+
+\section{Projects}
+    \resumeSubHeadingListStart
+      \resumeProjectHeading
+          {\textbf{Geospatial Analysis \& Coordinate Mapping Pipeline} $|$ \emph{Python, ArcGIS, GeoPandas, SQL}}{2024}
+          \resumeItemListStart
+            \resumeItem{Ingested, cleaned, and transformed large-scale geospatial coordinate datasets across Coordinate Reference Systems (CRS) to construct multi-layer density heatmaps and spatial boundary visualizations.}
+            \resumeItem{Implemented spatial indexing, point-in-polygon querying, and non-parametric filtering to clean noisy GPS/coordinate streams and resolve ambiguous spatial cluster classifications.}
+          \resumeItemListEnd
+    \resumeSubHeadingListEnd
+
+\section{Technical Skills}
+ \begin{itemize}[leftmargin=0.15in, label={}]
+    \small{\item{
+     \textbf{Analytics \& Data Science}{: Time-Series Anomaly Detection, Hypothesis Testing, Exposure Rate Monitoring, Precision/Recall Optimization, Causal Data Analysis, AUC-ROC, Heuristic Search} \\
+     \textbf{Languages}{: Python, SQL (Trino/Postgres), R, MATLAB, C/C++, Java, JavaScript, HTML/CSS} \\
+     \textbf{Data Engineering \& BI}{: Tableau, DataVisor BI, Plotly, Seaborn, AWS SageMaker, Starburst (Trino), Databricks, Distributed SQL Query Optimization, Slack Webhooks} \\
+     \textbf{Geospatial \& Libraries}{: ArcGIS, GeoPandas, Shapely, Scikit-Learn, Pandas, Dask, NetworkX}
+    }}
+ \end{itemize}
+
+\end{document}

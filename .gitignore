@@ -1,26 +1,41 @@
-# Secrets + ephemeral data
+# Secrets & sensitive credentials
+.env
 data/.env
+data/*storage_state*.json
+
+# SQLite databases
+*.db
+data/*.db
 data/jobs.db
 
-# Build output
+# Ephemeral runtime manifests
+data/snoozed_jobs.json
+
+# Build output, test scratchpads, and artifacts
 artifacts/
+scratch/
+data/resumes/generated_pdfs/
 __pycache__/
 *.pyc
 *.pyo
+*.log
 
-# OS
+# OS & Environment
 .DS_Store
-
-# Editor + tooling
+Thumbs.db
 .venv/
+venv/
+ENV/
 .vscode/
+.idea/
 
-# Playwright browser profiles (if created)
+# Playwright browser profiles
 playwright_user_dir_*/
 
 # Keep tracked (do NOT ignore):
 # data/jobs_tracker.csv   ← source of truth for job applications
 # data/jobs_details.json  ← evaluation output
 # data/library.json       ← candidate profile
-# data/resume.pdf         ← résumé (tracked; ask user if they prefer to ignore it)
+# data/resume_*.pdf       ← résumés
+# data/resumes/tex/       ← LaTeX résumé templates
 # src/*.py                ← all source code

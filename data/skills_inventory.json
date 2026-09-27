@@ -1,0 +1,139 @@
+{
+  "skills": [
+    {
+      "category": "Programming Languages",
+      "items": [
+        {"name": "Python", "experience_level": "Daily / Advanced", "contexts": ["BILL", "DE-HNN / Qualcomm", "Intel", "Single Particle", "UCSD", "ASU"]},
+        {"name": "SQL", "experience_level": "Advanced (Distributed)", "contexts": ["Trino / Starburst", "PostgreSQL", "MySQL", "MongoDB NoSQL"]},
+        {"name": "R", "experience_level": "Academic / Statistical Modeling", "contexts": ["UCSD Data Science"]},
+        {"name": "MATLAB", "experience_level": "Academic / Mathematical Modeling", "contexts": ["UCSD Data Science"]},
+        {"name": "C / C++", "experience_level": "Systems / Academic", "contexts": ["ASU MS CS", "UCSD"]},
+        {"name": "Java", "experience_level": "Object-Oriented / Academic", "contexts": ["ASU", "UCSD"]},
+        {"name": "JavaScript / TypeScript", "experience_level": "Frontend / Scripting", "contexts": ["Google Apps Script", "Web Dashboards"]},
+        {"name": "HTML / CSS", "experience_level": "Web Frontend", "contexts": ["Dashboarding", "Web Apps"]}
+      ]
+    },
+    {
+      "category": "Machine Learning & Deep Learning",
+      "items": [
+        {"name": "PyTorch", "type": "Framework"},
+        {"name": "PyTorch Geometric (PyG)", "type": "Framework"},
+        {"name": "TensorFlow", "type": "Framework"},
+        {"name": "Keras", "type": "Framework"},
+        {"name": "DGL", "type": "Framework"},
+        {"name": "Scikit-Learn", "type": "Framework"},
+        {"name": "Optuna", "type": "Framework"},
+        {"name": "Dask", "type": "Framework"},
+        {"name": "Graph Neural Networks (GNNs)", "type": "Architecture"},
+        {"name": "Directed Graph Convolutional Networks (Directed GCNs)", "type": "Architecture"},
+        {"name": "Linear Transformers with Laplacian Positional Encodings (LapPE)", "type": "Architecture"},
+        {"name": "GraphGPS", "type": "Architecture"},
+        {"name": "Hypergraph Neural Networks", "type": "Architecture"},
+        {"name": "Random Forest", "type": "Architecture"},
+        {"name": "Decision Trees", "type": "Architecture"},
+        {"name": "RIPPER & CN2 (Benchmarked)", "type": "Architecture"},
+        {"name": "Supervised Classification & Regression", "type": "Methodology"},
+        {"name": "Hyperparameter Tuning (GridSearch, Optuna)", "type": "Methodology"},
+        {"name": "Model Pruning & Early Stopping", "type": "Methodology"},
+        {"name": "GPU Memory Profiling & Compute Optimization (NVIDIA A100)", "type": "Methodology"},
+        {"name": "Multi-Modal & Multi-Task Learning", "type": "Methodology"}
+      ]
+    },
+    {
+      "category": "Agentic Systems & NLP",
+      "items": [
+        {"name": "Claude API (Anthropic)", "type": "Model / API"},
+        {"name": "OpenAI API (ChatGPT / GPT Models)", "type": "Model / API"},
+        {"name": "LiteLLM", "type": "Model / API"},
+        {"name": "Ollama", "type": "Model / API"},
+        {"name": "Agentic Tool / Skill Calling & Function Execution", "type": "Technique"},
+        {"name": "Multi-Step Automated Cluster Fanout", "type": "Technique"},
+        {"name": "Automated Structured Summarization", "type": "Technique"},
+        {"name": "Domain-Specific Prompt Engineering", "type": "Technique"},
+        {"name": "Context Extraction & Sales/Investigation Triage", "type": "Technique"}
+      ]
+    },
+    {
+      "category": "Graph Analytics & Network Modeling",
+      "items": [
+        {"name": "NetworkX", "type": "Library"},
+        {"name": "PyG", "type": "Library"},
+        {"name": "DGL", "type": "Library"},
+        {"name": "Metis Partitioning", "type": "Library"},
+        {"name": "Entity Resolution & Linkage Graphs", "type": "Technique"},
+        {"name": "Bipartite Graph Modeling", "type": "Technique"},
+        {"name": "Directed Hypergraphs & Star Graphs", "type": "Technique"},
+        {"name": "Topological Feature Extraction (Persistent Homology / PD)", "type": "Technique"},
+        {"name": "Spectral Graph Theory (Top-10 Laplacian Eigenvectors)", "type": "Technique"},
+        {"name": "Community Detection & Subgraph Clustering", "type": "Technique"}
+      ]
+    },
+    {
+      "category": "Statistical Methods & Data Science",
+      "items": [
+        {"name": "Time-Series Anomaly Detection (Z-Score with Seasonal Controls)", "type": "Technique"},
+        {"name": "Distribution Drift & Exposure Rate Monitoring", "type": "Technique"},
+        {"name": "Heuristic Search Optimization (Adaptive-Floor Beam Search)", "type": "Technique"},
+        {"name": "AUC-ROC Feature Selection", "type": "Technique"},
+        {"name": "Causal & Observational Data Analysis", "type": "Technique"},
+        {"name": "Hypothesis Testing & Experimental Design", "type": "Technique"},
+        {"name": "Non-Parametric & Resampling Methods (Bootstrapping, Permutation Tests)", "type": "Technique"},
+        {"name": "Precision / Recall Trade-off Optimization", "type": "Technique"}
+      ]
+    },
+    {
+      "category": "Geospatial Analytics",
+      "items": [
+        {"name": "ArcGIS", "type": "Library"},
+        {"name": "GeoPandas", "type": "Library"},
+        {"name": "Shapely", "type": "Library"},
+        {"name": "Coordinate Reference Systems (CRS) Transformations", "type": "Technique"},
+        {"name": "GPS / Coordinate Stream Noise Filtering", "type": "Technique"},
+        {"name": "Point-in-Polygon & Spatial Indexing", "type": "Technique"},
+        {"name": "Multi-Layer Density Heatmaps & Geographic Boundary Visualization", "type": "Technique"}
+      ]
+    },
+    {
+      "category": "Cloud, Big Data & Infrastructure",
+      "items": [
+        {"name": "AWS SageMaker", "type": "Platform"},
+        {"name": "AWS S3", "type": "Platform"},
+        {"name": "Starburst (Trino)", "type": "Platform"},
+        {"name": "Databricks", "type": "Platform"},
+        {"name": "Apache Spark", "type": "Platform"},
+        {"name": "Hadoop", "type": "Platform"},
+        {"name": "Google Cloud Platform", "type": "Platform"},
+        {"name": "Docker", "type": "Platform"},
+        {"name": "MySQL", "type": "Database"},
+        {"name": "PostgreSQL", "type": "Database"},
+        {"name": "MongoDB", "type": "Database"},
+        {"name": "NoSQL", "type": "Database"},
+        {"name": "Starburst / Trino Federated Catalogs", "type": "Database"},
+        {"name": "Distributed Multi-Table Query Optimization", "type": "Workflow"},
+        {"name": "Partition Pruning & High-Throughput Batch Processing", "type": "Workflow"},
+        {"name": "Scheduled SageMaker Inference Jobs", "type": "Workflow"},
+        {"name": "Automated Health Monitoring & Slack Webhook Pipelines", "type": "Workflow"}
+      ]
+    },
+    {
+      "category": "Business Intelligence, Visualization & Ops",
+      "items": [
+        {"name": "Tableau (Calculated Fields, LODs, KPI Dashboards)", "type": "Tool"},
+        {"name": "DataVisor BI", "type": "Tool"},
+        {"name": "Plotly", "type": "Tool"},
+        {"name": "Seaborn", "type": "Tool"},
+        {"name": "React", "type": "Tool"},
+        {"name": "D3.js", "type": "Tool"},
+        {"name": "Microsoft Excel", "type": "Tool"},
+        {"name": "Google Apps Script", "type": "Tool"},
+        {"name": "Flask", "type": "Tool"},
+        {"name": "Django", "type": "Tool"},
+        {"name": "Node.js", "type": "Tool"},
+        {"name": "Centralized KPI & Source-of-Truth Architecture", "type": "Operational Practice"},
+        {"name": "Agile / Scrum Sprint Execution (Jira)", "type": "Operational Practice"},
+        {"name": "Git & GitHub Version Control", "type": "Operational Practice"},
+        {"name": "Human-in-the-Loop Operational Workflow Automation", "type": "Operational Practice"}
+      ]
+    }
+  ]
+}

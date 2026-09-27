@@ -1,0 +1,130 @@
+%-------------------------
+% Resume in Latex - Technical Lead: Governance, Data Systems & Reporting
+%------------------------
+
+\documentclass[letterpaper,11pt]{article}
+
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\input{glyphtounicode}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\addtolength{\oddsidemargin}{-0.5in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1in}
+\addtolength{\topmargin}{-.5in}
+\addtolength{\textheight}{1.0in}
+\urlstyle{same}
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-5pt}]
+
+\pdfgentounicode=1
+
+\newcommand{\resumeItem}[1]{\item\small{{#1 \vspace{-2pt}}}}
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-2pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & #2 \\
+      \textit{\small#3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-7pt}
+}
+\newcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \small#1 & #2 \\
+    \end{tabular*}\vspace{-7pt}
+}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-5pt}}
+
+\begin{document}
+
+\begin{center}
+    \textbf{\Huge \scshape Joshua Li} \\ \vspace{1pt}
+    \small US Citizen $|$ (480) 616-8194 $|$ 
+    \href{mailto:joshualingli@gmail.com}{\underline{joshualingli@gmail.com}} $|$ 
+    \href{https://linkedin.com/in/joshualingli}{\underline{linkedin.com/in/joshualingli}} $|$
+    \href{https://github.com/faradayj}{\underline{github.com/faradayj}}
+\end{center}
+
+\section{Education}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Arizona State University}{Tempe, AZ}
+      {Master of Science in Computer Science (GPA: 4.0)}{Aug. 2025 -- Dec. 2026 (Expected)}
+    \resumeSubheading
+      {University of California, San Diego}{San Diego, CA}
+      {Bachelor of Science in Data Science (GPA: 3.9)}{Sept. 2021 -- Mar. 2025}
+  \resumeSubHeadingListEnd
+
+\section{Experience}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Data Systems \& Risk Strategy Specialist}{Dec. 2025 -- Present}
+      {BILL}{San Jose, CA}
+      \resumeItemListStart
+        \resumeItem{Architected automated risk scoring and governance pipelines on AWS SageMaker, integrating identity graphs and policy validation rules across 90K+ organizations and 91K+ entity linkages.}
+        \resumeItem{Engineered graph resolution models linking 231 high-risk organizations to prohibited third-party entities, mitigating \$213K+ in preventable operational and financial exposure.}
+        \resumeItem{Built end-to-end data reconciliation and integrity validation pipelines using SQL (Starburst/Trino) and Python, deploying automated monitoring agents with Slack alerts for discrepancy detection.}
+        \resumeItem{Designed and maintained executive dashboards in Tableau, DataVisor, and React, surfacing real-time operational metrics, audit trails, and risk trends for leadership.}
+        \resumeItem{Partnered cross-functionally across Product, Engineering, and Operations teams to translate business policies and operational requirements into automated rule systems, reducing manual review referrals by 21\%.}
+      \resumeItemListEnd
+
+    \resumeSubheading
+      {Software \& Systems Intern}{July 2023 -- Oct. 2023}
+      {Single Particle LLC}{San Diego, CA}
+      \resumeItemListStart
+        \resumeItem{Developed automated technical extraction tools using LLMs to parse complex hardware specifications, operational SOPs, and system requirements for high-performance workstations.}
+        \resumeItem{Structured documentation and digital onboarding workflows, accelerating stakeholder adoption and technical training efficiency.}
+      \resumeItemListEnd
+
+    \resumeSubheading
+      {Data Science \& Systems Research Intern}{June 2022 -- Sept. 2022}
+      {Intel Corporation}{Folsom, CA}
+      \resumeItemListStart
+        \resumeItem{Conducted extensive data validation, system benchmarking, and integrity audits in Python and SQL across enterprise data workflows, improving pipeline reliability and processing efficiency by 20\%.}
+      \resumeItemListEnd
+  \resumeSubHeadingListEnd
+
+\section{Projects}
+    \resumeSubHeadingListStart
+      \resumeProjectHeading
+          {\textbf{Enterprise Data Reconciliation \& Audit Engine} $|$ \emph{SQL, Python, Tableau, AWS SageMaker}}{2024 -- Present}
+          \resumeItemListStart
+            \resumeItem{Architected an automated data reconciliation and audit engine that ingests multi-source transactional logs, performing automated schema validation, anomaly scoring, and discrepancy resolution.}
+            \resumeItem{Built interactive reporting modules with automated KPI metric generation and data integrity health checks.}
+          \resumeItemListEnd
+    \resumeSubHeadingListEnd
+
+\section{Technical \& Leadership Skills}
+ \begin{itemize}[leftmargin=0.15in, label={}]
+    \small{\item{
+     \textbf{Governance \& Risk Strategy}{: Policy Enforcement, Vendor \& Third-Party Oversight, Risk Modeling, Prohibited Entity Screening, Audit Trail Validation, Operational Controls} \\
+     \textbf{Reporting \& Business Intelligence}{: Tableau, Power BI, Looker, DataVisor BI, Executive Dashboard Design, KPI Tracking, D3.js, React} \\
+     \textbf{Data Integrity \& Technical}{: SQL (Trino, PostgreSQL, MySQL), Data Validation, Data Reconciliation, Python, AWS (SageMaker, S3), ETL Pipelines, Anomaly Detection, Git, Agile (Jira)} \\
+     \textbf{Leadership \& Operations}{: Cross-Functional Stakeholder Management, Training \& Systems Integration, Technical Roadmapping, Workflow Automation, Process Governance}
+    }}
+ \end{itemize}
+
+\end{document}

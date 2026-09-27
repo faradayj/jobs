@@ -1,0 +1,129 @@
+%-------------------------
+% Resume in Latex - Amazon: Research Scientist, WW Sustainability
+%------------------------
+
+\documentclass[letterpaper,11pt]{article}
+
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\input{glyphtounicode}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\addtolength{\oddsidemargin}{-0.5in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1in}
+\addtolength{\topmargin}{-.5in}
+\addtolength{\textheight}{1.0in}
+\urlstyle{same}
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-5pt}]
+
+\pdfgentounicode=1
+
+\newcommand{\resumeItem}[1]{\item\small{{#1 \vspace{-2pt}}}}
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-2pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & #2 \\
+      \textit{\small#3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-7pt}
+}
+\newcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \small#1 & #2 \\
+    \end{tabular*}\vspace{-7pt}
+}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-5pt}}
+
+\begin{document}
+
+\begin{center}
+    \textbf{\Huge \scshape Joshua Li} \\ \vspace{1pt}
+    \small US Citizen $|$ (480) 616-8194 $|$ 
+    \href{mailto:joshualingli@gmail.com}{\underline{joshualingli@gmail.com}} $|$ 
+    \href{https://linkedin.com/in/joshualingli}{\underline{linkedin.com/in/joshualingli}} $|$
+    \href{https://github.com/faradayj}{\underline{github.com/faradayj}}
+\end{center}
+
+\section{Education}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Arizona State University}{Tempe, AZ}
+      {Master of Science in Computer Science (Quantitative Focus) (GPA: 4.0)}{Aug. 2025 -- Dec. 2026 (Expected)}
+    \resumeSubheading
+      {University of California, San Diego}{San Diego, CA}
+      {Bachelor of Science in Data Science (GPA: 3.9)}{Sept. 2021 -- Mar. 2025}
+  \resumeSubHeadingListEnd
+
+\section{Experience}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Research Scientist -- Quantitative Methods}{Dec. 2025 -- Present}
+      {BILL}{San Jose, CA}
+      \resumeItemListStart
+        \resumeItem{Built quantitative benchmark and statistical models in Python and R to scale the evaluation of complex environmental and risk interventions across heterogeneous, 6-month rolling datasets.}
+        \resumeItem{Developed baseline-setting frameworks and attribution methodologies, employing adaptive-floor beam search to increase structural signal precision by 1.5x and recall by 3 percentage points.}
+        \resumeItem{Curated high-integrity golden datasets using NetworkX (90K nodes, 91K edges) for automated validation of cross-sectoral supply chain and entity dependencies with 93.5\% precision.}
+        \resumeItem{Designed interactive, web-based dashboards (React, Tableau, DataVisor) to translate complex scientific methodologies and attribution metrics into operational requirements for senior leaders.}
+      \resumeItemListEnd
+
+    \resumeSubheading
+      {Data Science \& Quantitative Research Intern}{June 2022 -- Sept. 2022}
+      {Intel Corporation}{Folsom, CA}
+      \resumeItemListStart
+        \resumeItem{Led quantitative field research and experimental data analysis, building statistical simulations in Python and MATLAB to benchmark computational bottlenecks across diverse enterprise workflows.}
+        \resumeItem{Evaluated the sustainability and efficiency impacts of hardware architectures, driving data-backed hardware interventions that improved pipeline processing efficiency by 20\%.}
+      \resumeItemListEnd
+
+    \resumeSubheading
+      {Software \& Systems Intern}{July 2023 -- Oct. 2023}
+      {Single Particle LLC}{San Diego, CA}
+      \resumeItemListStart
+        \resumeItem{Assessed environmental and hardware constraints for high-performance imaging workstations, developing automated extraction tools to parse technical specifications and operational requirements.}
+      \resumeItemListEnd
+  \resumeSubHeadingListEnd
+
+\section{Projects}
+    \resumeSubHeadingListStart
+      \resumeProjectHeading
+          {\textbf{Scalable Measurement Models for Network Graphs} $|$ \emph{Python, PyTorch, R, AWS}}{2024}
+          \resumeItemListStart
+            \resumeItem{Built comprehensive statistical evaluation models across 6 large-scale topological graph datasets (up to 1.3M nodes), predicting demand, routing congestion, and attributing impacts to specific network interventions.}
+            \resumeItem{Employed experimental data analysis techniques to optimize resource usage, cutting computational latency by 89\% while maintaining high-fidelity measurement integrity.}
+          \resumeItemListEnd
+    \resumeSubHeadingListEnd
+
+\section{Technical Skills}
+ \begin{itemize}[leftmargin=0.15in, label={}]
+    \small{\item{
+     \textbf{Quantitative \& Modeling}{: Statistical Modeling, Experimental Data Analysis, Measurement Methodologies, Baseline-setting, Benchmark Development, Python, R, MATLAB, SQL} \\
+     \textbf{Data Science \& ML}{: Scikit-Learn, PyTorch, NetworkX, Heuristic Search, LLM Integration} \\
+     \textbf{Dashboards \& Visualization}{: Tableau, React, D3.js, Plotly, Web-based Dashboard Frameworks} \\
+     \textbf{Infrastructure \& Workflow}{: AWS, Docker, Git, CI/CD, Agile Development}
+    }}
+ \end{itemize}
+
+\end{document}

@@ -1,0 +1,220 @@
+{
+  "personal_info": {
+    "name": "Joshua Li",
+    "citizenship": "US Citizen",
+    "contact": {
+      "phone": "(480) 616-8194",
+      "email": "joshualingli@gmail.com",
+      "linkedin": "https://linkedin.com/in/joshualingli",
+      "github": "https://github.com/faradayj"
+    }
+  },
+  "education_history": [
+    {
+      "institution": "Arizona State University",
+      "location": "Tempe, AZ",
+      "degree_type": "Master of Science",
+      "major": "Computer Science",
+      "start_date": "2025-08",
+      "end_date": "2026-12",
+      "expected": true,
+      "gpa": "4.0",
+      "coursework": []
+    },
+    {
+      "institution": "University of California, San Diego",
+      "location": "San Diego, CA",
+      "degree_type": "Bachelor of Science",
+      "major": "Data Science",
+      "start_date": "2021-09",
+      "end_date": "2025-03",
+      "expected": false,
+      "gpa": "3.9",
+      "coursework": [
+        "Statistical Modeling & Inference",
+        "Observational & Experimental Data Analysis",
+        "Econometric Methods & Causal Inference",
+        "Data Structures & Algorithms",
+        "Machine Learning & Deep Learning"
+      ]
+    }
+  ],
+  "work_experience": [
+    {
+      "company": "BILL",
+      "location": "San Jose, CA",
+      "title": "Associate Fraud Strategy Data Scientist",
+      "start_date": "2025-12",
+      "end_date": "Present",
+      "methodology": [
+        "Agile / Scrum",
+        "Jira Sprints",
+        "Cross-Functional Collaboration with Risk Ops"
+      ],
+      "stack": [
+        "Python", "SQL (Trino / Starburst)", "AWS SageMaker", "NetworkX",
+        "Scikit-Learn", "Claude API (Tool/Skill Calling)", "Tableau",
+        "DataVisor BI", "Google Apps Script", "Slack API"
+      ],
+      "workstreams": [
+        {
+          "name": "Autonomous Rule Suite Optimization Engine",
+          "category": "Heuristic Search & Automated Rule Induction",
+          "description": "Engineered an autonomous end-to-end pipeline that auto-generates SQL queries and data extraction scripts over rolling 6-month data lakes to produce human-interpretable rule sets.",
+          "details": [
+            "Custom adaptive-floor beam search algorithm with dynamic pruning",
+            "AUC-ROC evaluation to identify and incorporate high-value unutilized features",
+            "Benchmarked against RIPPER, CN2, and standard Decision Trees",
+            "Configurable search parameters (tree depth, beam width, custom optimization goals)",
+            "Automated monthly re-optimization loop to discover emerging fraud patterns"
+          ],
+          "impact_metrics": [
+            "Increased precision by a factor of 1.5x",
+            "Increased fraud detection recall by 3 percentage points (+3 pp) to 99.3%",
+            "Reduced manual review referrals by 21%",
+            "Captured $83K in additional fraudulent transactions"
+          ]
+        },
+        {
+          "name": "Multi-Entity Linkage & Resolution Graph",
+          "category": "Graph Analytics & Entity Resolution",
+          "description": "Constructed an identity resolution graph on AWS SageMaker across 90K organizations and 91K edges over 21 link vectors to uncover 'seen offenders' and syndicate networks.",
+          "details": [
+            "C1 Signals (Direct Entity Identifiers): KYC phone number, physical address, legal name, SSN/EIN",
+            "C2 Signals (Behavioral & Transactional): Shared counterparty networks, circular payment loops, interaction graphs",
+            "Dynamic mobile IP scrubbing and noisy edge filtering to eliminate false-positive linkage clusters",
+            "Normalization and standardization of identity vectors across heterogeneous databases",
+            "Random Forest classification tuned via exhaustive GridSearch on graph topological and nodal features",
+            "Automated weekly batch retraining and scheduled SageMaker inference jobs",
+            "Weekly automated blocking reports for preexisting and newly onboarded orgs"
+          ],
+          "impact_metrics": [
+            "Achieved 93.5% precision and 99.4% recall on graph entity linkage",
+            "Linked 231 of 1,645 fraudulent organizations to known prohibited entities",
+            "Identified $213K of $660K FY27 fraud exposure as preventable"
+          ]
+        },
+        {
+          "name": "GenAI Operational Investigation Agent",
+          "category": "Agentic LLM Systems & Workflow Tooling",
+          "description": "Integrated a Claude-powered agent utilizing function/tool-calling to automate investigation queues and provide context summaries for Risk Ops teams.",
+          "details": [
+            "Tool-calling interface to execute automated fanout searches across linked entity clusters",
+            "Generated natural language summaries of macro-cluster topologies and micro-cluster details",
+            "Automated synthesis of entity-specific attributes: Total Payment Volume (TPV), tenure, dispute rates, return history",
+            "Google Apps Script automation to streamline investigation queue processing for risk ops"
+          ],
+          "impact_metrics": []
+        },
+        {
+          "name": "Distributed Analytics, BI Dashboards & Anomaly Monitoring",
+          "category": "Data Engineering, BI & Time-Series Monitoring",
+          "description": "Established the centralized analytical source of truth from scratch for a product line lacking reporting infrastructure and deployed automated production drift alerting.",
+          "details": [
+            "Authored complex distributed SQL queries in Starburst/Trino over multi-terabyte federated tables (complex multi-table joins, partitioned queries)",
+            "Built 8 production KPI dashboards in Tableau and DataVisor with calculated fields, dynamic aggregations, and tables",
+            "Deployed scheduled daily AWS SageMaker monitoring jobs querying Starburst",
+            "Z-score statistical anomaly detection with seasonal controls for dispute spikes and volume drift",
+            "Automated Slack alerting integrations for real-time risk drift visibility"
+          ],
+          "impact_metrics": []
+        }
+      ]
+    },
+    {
+      "company": "Single Particle LLC",
+      "location": "San Diego, CA",
+      "title": "Software Programming Intern",
+      "start_date": "2023-07",
+      "end_date": "2023-10",
+      "stack": [
+        "Python", "OpenAI API", "Prompt Engineering", "Web Integration"
+      ],
+      "workstreams": [
+        {
+          "name": "Domain-Specific Technical Consultation Bot",
+          "category": "Conversational AI / Systems Triage",
+          "description": "Prompt-engineered and deployed a GPT-based conversational interface for the company website to automate technical requirement gathering for cryo-electron microscopy (cryoEM) hardware/software workstations.",
+          "details": [
+            "Domain-specific prompt engineering covering cryoEM software dependencies and GPU/RAM/storage hardware configurations",
+            "Automated extraction of laboratory customer requirements to match compute budgets with optimized workstation specs",
+            "Frontend web integration for interactive customer onboarding"
+          ],
+          "impact_metrics": []
+        }
+      ]
+    },
+    {
+      "company": "Intel Corporation",
+      "location": "Folsom, CA",
+      "title": "Software Programming Intern",
+      "start_date": "2022-06",
+      "end_date": "2022-09",
+      "stack": [
+        "Python", "Scikit-Learn", "Hardware Profiling Tools", "Benchmarking"
+      ],
+      "workstreams": [
+        {
+          "name": "Data Science Workstation Benchmarking & Architecture Profiling",
+          "category": "Systems Benchmarking & Workload Simulation",
+          "description": "Researched sector-specific data science workflows, emulated computational pipelines, and identified hardware bottlenecks across CPU, RAM, and storage to inform workstation specs.",
+          "details": [
+            "Researched and mapped data science computational requirements across diverse industry verticals",
+            "Simulated real-world ML/DS workloads using Python and Scikit-Learn (algorithmic compute vs. memory bandwidth vs. disk I/O)",
+            "Empirical hardware bottleneck profiling (CPU clock speed vs. multi-core scaling vs. RAM capacity vs. NVMe throughput)"
+          ],
+          "impact_metrics": [
+            "Delivered quantitative benchmark reports informing workstation configurations, improving simulated workflow efficiency by 20%"
+          ]
+        }
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "id": "dehnn_qualcomm",
+      "name": "DE-HNN: Graph Neural Network Optimization for Circuit Netlists",
+      "collaborators": "UCSD / Qualcomm",
+      "dates": "2024",
+      "publication_context": "AIStats 2024 paper: 'DE-HNN: An effective neural model for Circuit Netlist representation' (Z. Luo et al.)",
+      "stack": [
+        "Linux CentOS 8", "Python 3.8.8", "CUDA 11.6", "PyTorch 1.13.1",
+        "PyTorch Geometric (PyG)", "DGL (dgl-cu113)", "NetworkX", "GraphGPS"
+      ],
+      "details": [
+        "SKY130-HS RocketTile Data / Superblue Netlists (400K to 1.3M nodes and nets per netlist)",
+        "Bipartite graph, Directed Hypergraph, Star graph representations",
+        "Top-10 Laplacian Eigenvectors (LapPE) and Persistent Homology Diagrams (PD) for topological node features",
+        "Net-based Wirelength Regression, Demand Regression, and Cell-based Congestion Classification tasks",
+        "Evaluated Directed GCN, Linear Transformer + LapPE, GraphGPS positional encodings, Virtual Nodes"
+      ],
+      "engineering_optimizations": [
+        "Full model with Virtual Nodes required >40GB VRAM on NVIDIA A100, triggering OOM failures.",
+        "Implemented systematic architecture profiling and hyperparameter tuning.",
+        "Layer and dimension reduction.",
+        "Early-stopping implementation and training stabilization."
+      ],
+      "impact_metrics": [
+        "89.3% reduction in training runtime",
+        "38.8% reduction in peak GPU memory usage",
+        "Delivered final model with only a 6% average performance drop while drastically lowering compute costs"
+      ]
+    },
+    {
+      "id": "geospatial_mapping_analysis",
+      "name": "Geospatial Analysis & Coordinate Mapping Pipeline",
+      "institution_context": "University of California, San Diego",
+      "dates": "2024",
+      "stack": [
+        "Python", "ArcGIS", "GeoPandas", "Shapely", "SQL", "Plotly", "D3.js"
+      ],
+      "details": [
+        "Ingested, cleaned, and transformed large-scale geospatial coordinate datasets across Coordinate Reference Systems (CRS)",
+        "Constructed multi-layer density heatmaps and spatial boundary visualizations across the United States",
+        "Implemented spatial indexing, point-in-polygon querying, and non-parametric filtering to clean noisy GPS/coordinate streams and resolve ambiguous spatial cluster classifications"
+      ],
+      "engineering_optimizations": [],
+      "impact_metrics": []
+    }
+  ]
+}

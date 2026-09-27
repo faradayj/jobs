@@ -1,0 +1,130 @@
+%-------------------------
+% Resume in Latex - Category 4: Core Autonomy & Perception Modeling
+%------------------------
+
+\documentclass[letterpaper,11pt]{article}
+
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\input{glyphtounicode}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\addtolength{\oddsidemargin}{-0.5in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1in}
+\addtolength{\topmargin}{-.5in}
+\addtolength{\textheight}{1.0in}
+\urlstyle{same}
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-5pt}]
+
+\pdfgentounicode=1
+
+\newcommand{\resumeItem}[1]{\item\small{{#1 \vspace{-2pt}}}}
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-2pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & #2 \\
+      \textit{\small#3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-7pt}
+}
+\newcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \small#1 & #2 \\
+    \end{tabular*}\vspace{-7pt}
+}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-5pt}}
+
+\begin{document}
+
+\begin{center}
+    \textbf{\Huge \scshape Joshua Li} \\ \vspace{1pt}
+    \small US Citizen $|$ (480) 616-8194 $|$ 
+    \href{mailto:joshualingli@gmail.com}{\underline{joshualingli@gmail.com}} $|$ 
+    \href{https://linkedin.com/in/joshualingli}{\underline{linkedin.com/in/joshualingli}} $|$
+    \href{https://github.com/faradayj}{\underline{github.com/faradayj}}
+\end{center}
+
+\section{Education}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Arizona State University}{Tempe, AZ}
+      {Master of Science in Computer Science (GPA: 4.0)}{Aug. 2025 -- Dec. 2026 (Expected)}
+    \resumeSubheading
+      {University of California, San Diego}{San Diego, CA}
+      {Bachelor of Science in Data Science (GPA: 3.9)}{Sept. 2021 -- Mar. 2025}
+  \resumeSubHeadingListEnd
+
+\section{Experience}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Associate Machine Learning Engineer -- Core ML \& Perception}{Dec. 2025 -- Present}
+      {BILL}{San Jose, CA}
+      \resumeItemListStart
+        \resumeItem{Constructed an identity resolution graph on AWS SageMaker (90K nodes, 91K edges) spanning 21 link vectors, predicting behavioral attributes with 93.5\% precision and 99.4\% recall via Random Forest classification.}
+        \resumeItem{Engineered an automated rule induction and data mining pipeline utilizing custom adaptive-floor beam search algorithms, driving a 3 pp increase in model recall and generating actionable predictive signals.}
+        \resumeItem{Architected an agentic LLM triage pipeline using Claude tool-calling, executing automated fanout searches across macro-cluster topologies to structurally define entity behaviors.}
+        \resumeItem{Deployed scheduled daily AWS SageMaker ML inference jobs, building robust data ingestion pipelines in SQL to seamlessly orchestrate terabytes of training data.}
+        \resumeItem{Applied dynamic noise filtering and mobile IP scrubbing on complex interaction graphs to dramatically reduce false-positive linkage clusters in production.}
+      \resumeItemListEnd
+
+    \resumeSubheading
+      {Data Science \& Systems Research Intern}{June 2022 -- Sept. 2022}
+      {Intel Corporation}{Folsom, CA}
+      \resumeItemListStart
+        \resumeItem{Simulated real-world machine learning algorithms and computational workloads in Python to profile hardware bottleneck bounds, accelerating ML pipeline workflow efficiency by 20\%.}
+      \resumeItemListEnd
+
+    \resumeSubheading
+      {Software \& Systems Intern}{July 2023 -- Oct. 2023}
+      {Single Particle LLC}{San Diego, CA}
+      \resumeItemListStart
+        \resumeItem{Engineered an automated requirements extraction system using prompt-engineered deep learning endpoints to parse domain-specific hardware dependencies.}
+      \resumeItemListEnd
+  \resumeSubHeadingListEnd
+
+\section{Projects}
+    \resumeSubHeadingListStart
+      \resumeProjectHeading
+          {\textbf{DE-HNN: Graph Neural Network Optimization for Circuit Netlists} $|$ \emph{PyTorch, PyG, CUDA}}{2024}
+          \resumeItemListStart
+            \resumeItem{Engineered advanced Directed Graph Convolutional Networks (GCNs) and Hypergraph Neural Networks over 1.3M node datasets, extracting topological features via Laplacian Positional Encodings (LapPE).}
+            \resumeItem{Designed net-based regression and congestion classification endpoints in PyTorch to predict spatial routing capacities and demand metrics on A100 architectures.}
+            \resumeItem{Conducted systematic hyperparameter tuning (GridSearch) and model pruning, slashing deep learning training runtime by 89.3\% and peak VRAM usage by 38.8\%.}
+          \resumeItemListEnd
+    \resumeSubHeadingListEnd
+
+\section{Technical Skills}
+ \begin{itemize}[leftmargin=0.15in, label={}]
+    \small{\item{
+     \textbf{Machine Learning \& Deep Learning}{: PyTorch, PyG, TensorFlow, Keras, Graph Neural Networks (GNNs), Linear Transformers, Random Forest, Directed GCNs, Multi-Task Learning, Optuna} \\
+     \textbf{Languages \& Compute}{: Python, C/C++, CUDA, SQL, R, MATLAB, Java} \\
+     \textbf{Graph Modeling \& Perception}{: NetworkX, DGL, Bipartite Graph Modeling, Topological Feature Extraction, Spectral Graph Theory, Community Detection, Behavioral Modeling} \\
+     \textbf{Infrastructure}{: AWS SageMaker, Docker, Linux CentOS, Starburst (Trino), Git}
+    }}
+ \end{itemize}
+
+\end{document}

@@ -53,6 +53,7 @@ import asyncio
 import datetime
 import json
 import re
+import sys
 from pathlib import Path
 from urllib.parse import urlparse, parse_qsl
 
@@ -62,9 +63,10 @@ from playwright.async_api import async_playwright, Page
 from app_common import (
     RESUME_PATH, DEEPSEEK_KEY,
     PROFILE_SUMMARY, EDU,
-    deepseek_fill_page, rule_based_fill_fields, fuzzy_pick, label_match,
+    deepseek_fill_page, deepseek_pick_option, label_match, pick_decline,
     ARTIFACTS_DIR,
     launch_browser,
+    snooze_job_by_url,
 )
 
 ARTIFACTS = ARTIFACTS_DIR
@@ -111,6 +113,8 @@ def parse_greenhouse_token_and_job(url: str) -> tuple[str | None, str | None]:
             "seatgeek.com": "seatgeek",
             "www.seatgeek.com": "seatgeek",
             "braincorp.com": "braincorporation",
+            "study.com": "studycareers",
+            "www.study.com": "studycareers",
         }
         if netloc in KNOWN:
             board_token = KNOWN[netloc]
@@ -125,12 +129,17 @@ def parse_greenhouse_token_and_job(url: str) -> tuple[str | None, str | None]:
 def canonical_apply_url(url: str) -> str | None:
     """Given any Greenhouse-related URL, return the canonical apply form URL.
 
-    For embedded pages we try to construct the direct board URL so the apply
-    form loads cleanly without the company site's nav chrome.
+    If the URL is already hosted on greenhouse.io, canonicalize it to
+    https://job-boards.greenhouse.io/{token}/jobs/{job_id}.
+    For embedded company pages (?gh_jid=...), return the original page URL directly
+    so the company's backend can initialize the embedded iframe with its signed
+    validity tokens without guessing tenant board names.
     """
-    token, job_id = parse_greenhouse_token_and_job(url)
-    if token and job_id:
-        return f"https://job-boards.greenhouse.io/{token}/jobs/{job_id}"
+    parsed = urlparse(url)
+    if "greenhouse.io" in parsed.netloc.lower():
+        token, job_id = parse_greenhouse_token_and_job(url)
+        if token and job_id:
+            return f"https://job-boards.greenhouse.io/{token}/jobs/{job_id}"
     return url  # fall back to original
 
 
@@ -194,6 +203,14 @@ async def scan_fields(page: Page) -> list[dict]:
                    getComputedStyle(el).visibility !== 'hidden';
         }
 
+        function isRequired(el, label) {
+            if (el.required || el.getAttribute('aria-required') === 'true') return true;
+            if (label && (label.includes('*') || /required/i.test(label))) return true;
+            const p = el.closest('.field, .form-field, [class*="field"]');
+            if (p && (p.querySelector('.required, [class*="asterisk"]') || p.innerText.includes('*'))) return true;
+            return false;
+        }
+
         // ── Text / email / tel / number / url / textarea ──────────────────
         const textEls = document.querySelectorAll(
             'input[type="text"], input[type="email"], input[type="tel"],' +
@@ -211,6 +228,18 @@ async def scan_fields(page: Page) -> list[dict]:
                                   el.classList.contains('df__input') ||
                                   el.getAttribute('role') === 'combobox' ||
                                   (el.id && (el.id.includes('school') || el.id.includes('discipline')));
+            let val = el.value || '';
+            if (isSelectInput) {
+                const ctl = el.closest('[class*="select__control"], [class*="control"]');
+                if (ctl) {
+                    const hasVal = ctl.querySelector('[class*="has-value"], [class*="single-value"], [class*="singleValue"]') !== null;
+                    const txt = ctl.innerText.trim();
+                    if (hasVal || (txt && !txt.toLowerCase().startsWith('select') && txt !== '-- select --')) {
+                        val = txt;
+                    }
+                }
+            }
+            const lbl = getLabel(el);
             el.dataset.ghIdx = idx;
             fields.push({
                 index:        idx++,
@@ -218,9 +247,10 @@ async def scan_fields(page: Page) -> list[dict]:
                 type:         el.type || 'text',
                 id:           el.id || '',
                 name:         el.name || '',
-                label:        getLabel(el),
+                label:        lbl,
+                required:     isRequired(el, lbl),
                 section:      getSection(el),
-                value:        el.value || '',
+                value:        val,
                 options:      [],
                 isSelectInput: isSelectInput,
             });
@@ -234,15 +264,19 @@ async def scan_fields(page: Page) -> list[dict]:
             const opts = Array.from(el.options)
                 .map(o => o.text.trim())
                 .filter(t => t && t.toLowerCase() !== 'select...' && t.toLowerCase() !== '-- select --');
+            const lbl = getLabel(el);
+            let val = el.options[el.selectedIndex]?.text.trim() || '';
+            if (val.toLowerCase().startsWith('select') || val === '-- select --') val = '';
             fields.push({
                 index:   idx++,
                 tag:     'select',
                 type:    'select-one',
                 id:      el.id || '',
                 name:    el.name || '',
-                label:   getLabel(el),
+                label:   lbl,
+                required: isRequired(el, lbl),
                 section: getSection(el),
-                value:   el.options[el.selectedIndex]?.text.trim() || '',
+                value:   val,
                 options: opts,
             });
         }
@@ -254,23 +288,29 @@ async def scan_fields(page: Page) -> list[dict]:
             if (!isVisible(el)) continue;
             const key = el.name || el.id || String(idx);
             if (!radioGroups[key]) {
-                radioGroups[key] = { el, texts: [], values: [] };
+                radioGroups[key] = { el, texts: [], values: [], checkedVal: '' };
             }
             const lbl = document.querySelector('label[for="' + el.id + '"]');
-            radioGroups[key].texts.push(lbl ? lbl.innerText.trim() : el.value);
+            const text = lbl ? lbl.innerText.trim() : el.value;
+            radioGroups[key].texts.push(text);
             radioGroups[key].values.push(el.value);
+            if (el.checked) {
+                radioGroups[key].checkedVal = text || el.value;
+            }
         }
         for (const [key, grp] of Object.entries(radioGroups)) {
             grp.el.dataset.ghIdx = idx;
+            const lbl = getLabel(grp.el);
             fields.push({
                 index:       idx++,
                 tag:         'input',
                 type:        'radio',
                 id:          grp.el.id || '',
                 name:        grp.el.name || key,
-                label:       getLabel(grp.el),
+                label:       lbl,
+                required:    isRequired(grp.el, lbl),
                 section:     getSection(grp.el),
-                value:       '',
+                value:       grp.checkedVal || '',
                 options:     grp.texts,
                 radioValues: grp.values,
                 role:        'radio',
@@ -281,14 +321,17 @@ async def scan_fields(page: Page) -> list[dict]:
         const checkboxEls = document.querySelectorAll('input[type="checkbox"]');
         for (const el of checkboxEls) {
             if (!isVisible(el)) continue;
+            if (el.getAttribute('aria-hidden') === 'true' && el.getAttribute('tabindex') === '-1') continue;
             el.dataset.ghIdx = idx;
+            const lbl = getLabel(el);
             fields.push({
                 index:   idx++,
                 tag:     'input',
                 type:    'checkbox',
                 id:      el.id || '',
                 name:    el.name || '',
-                label:   getLabel(el),
+                label:   lbl,
+                required: isRequired(el, lbl),
                 section: getSection(el),
                 value:   el.checked ? 'true' : 'false',
                 options: [],
@@ -340,11 +383,69 @@ async def gh_exec_text(page: Page, field: dict, value: str, target=None):
         print(f"    ✓ text  [{idx}] {field['label']!r} = {value!r} (JS fallback: {e})")
 
 
+def match_numeric_range(val_str: str, options: list[str]) -> str | None:
+    """Match a numeric or float value (e.g. '4.0', '3.65', '3') to options containing
+    brackets, intervals, or threshold descriptors (e.g. '3.75 - 4', '4+', 'Below 2', '3.5 and above').
+    """
+    if not val_str or not options:
+        return None
+    m = re.search(r'(\d+(?:\.\d+)?)', str(val_str))
+    if not m:
+        return None
+    val = float(m.group(1))
+
+    matches = []
+    for o in options:
+        o_clean = o.strip()
+        # 1. Closed Range: 'low - high' or 'low to high'
+        m_range = re.search(r'(\d+(?:\.\d+)?)\s*(?:-|to)\s*(\d+(?:\.\d+)?)', o_clean, re.I)
+        if m_range:
+            low, high = float(m_range.group(1)), float(m_range.group(2))
+            if low <= val <= high:
+                matches.append((o, high - low, 1))
+                continue
+
+        # 2. Upper threshold: '4+' or '3.5+' or '3.5 and above' or 'above 3.5' or '>= 3.5'
+        m_plus = re.search(r'(?:above|over|greater than|>=?)\s*(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*(?:\+|and above|and higher|or above|or more)', o_clean, re.I)
+        if m_plus:
+            thresh = float(m_plus.group(1) or m_plus.group(2))
+            if val >= thresh:
+                matches.append((o, abs(val - thresh), 2))
+                continue
+
+        # 3. Lower threshold: 'Below 2', '< 3.0', 'under 2.5'
+        m_below = re.search(r'(?:below|under|less than|<=?)\s*(\d+(?:\.\d+)?)', o_clean, re.I)
+        if m_below:
+            thresh = float(m_below.group(1))
+            if val < thresh:
+                matches.append((o, abs(thresh - val) + 10.0, 3))
+                continue
+
+        # 4. Exact single number: '4' or '4.0'
+        m_single = re.match(r'^\s*(\d+(?:\.\d+)?)\s*$', o_clean)
+        if m_single:
+            if float(m_single.group(1)) == val:
+                matches.append((o, 0.0, 0))
+                continue
+
+    if matches:
+        matches.sort(key=lambda x: (x[2], x[1]))
+        return matches[0][0]
+    return None
+
+
 async def gh_exec_select(page: Page, field: dict, value: str, target=None):
     target = target or _tgt(page)
     idx  = field["index"]
     opts = field.get("options", [])
-    match = fuzzy_pick(opts, value) or value
+    label = field.get("label", "")
+    match = next((o for o in opts if o.strip().lower() == value.strip().lower()), None)
+    if not match and opts and DEEPSEEK_KEY:
+        match = await deepseek_pick_option(label, opts, context=f"Initial candidate target value: {value}")
+    if not match and opts:
+        match = match_numeric_range(value, opts)
+    if not match:
+        match = value
     try:
         el = target.locator(f"select[data-gh-idx='{idx}']").first
         await el.select_option(label=match, timeout=5000)
@@ -358,7 +459,7 @@ async def gh_exec_radio(page: Page, field: dict, value: str, target=None):
     idx   = field["index"]
     opts  = field.get("options", [])
     rvals = field.get("radioValues", [])
-    match = fuzzy_pick(opts, value) or (opts[0] if opts else value)
+    match = next((o for o in opts if o.strip().lower() == value.strip().lower()), None) or (opts[0] if opts else value)
     match_idx = opts.index(match) if match in opts else 0
     rval  = rvals[match_idx] if match_idx < len(rvals) else match
 
@@ -478,7 +579,7 @@ async def gh_exec_react_select(page: Page, field: dict, value: str, target=None,
             await el.fill(value)
             await target.wait_for_timeout(700)
         # Wait for the dropdown menu
-        menu = target.locator(".select__menu-list, [class*='select__menu']").first
+        menu = target.locator("div.select__menu:visible, div.select__menu-list:visible").first
         try:
             await menu.wait_for(state="visible", timeout=3000)
             # Get all visible option texts
@@ -488,7 +589,7 @@ async def gh_exec_react_select(page: Page, field: dict, value: str, target=None,
             # An unscoped querySelector can grab the wrong one, silently reading a different
             # field's options. Always pick the menu whose bounding box has non-zero height.
             _READ_VISIBLE_MENU_JS = """() => {
-                const menus = Array.from(document.querySelectorAll('.select__menu-list, [class*=select__menu]'));
+                const menus = Array.from(document.querySelectorAll('div.select__menu, div.select__menu-list, [class*="select__menu-list"]'));
                 const visible = menus.find(m => m.getBoundingClientRect().height > 0);
                 if (!visible) return [];
                 return Array.from(visible.querySelectorAll('[class*=option]')).map(o => o.innerText.trim());
@@ -502,7 +603,7 @@ async def gh_exec_react_select(page: Page, field: dict, value: str, target=None,
             # campus/city name) before giving up on a targeted search entirely.
             if (not opts_text or opts_text == ["No options"]) and not _is_decline and not _is_pick_any \
                     and label_match(label, "school", "institution", "university", "college"):
-                words = value.split()
+                words = [w for w in re.split(r'[, -]+', value) if w]
                 for n in (2, 1):
                     if len(words) <= n:
                         continue
@@ -512,6 +613,23 @@ async def gh_exec_react_select(page: Page, field: dict, value: str, target=None,
                     opts_text = await target.evaluate(_READ_VISIBLE_MENU_JS)
                     if opts_text and opts_text != ["No options"]:
                         break
+            # Discipline / major fields: if exact phrase had no options, try standard keywords
+            if (not opts_text or opts_text == ["No options"]) and not _is_decline and not _is_pick_any \
+                    and label_match(label, "discipline", "major", "field of study"):
+                if any(w in value.lower() for w in ["computer", "software", "cs", "cse"]):
+                    for term in ["Computer Science", "Computer Engineering"]:
+                        await el.fill(term)
+                        await target.wait_for_timeout(700)
+                        opts_text = await target.evaluate(_READ_VISIBLE_MENU_JS)
+                        if opts_text and opts_text != ["No options"]:
+                            break
+                elif any(w in value.lower() for w in ["data", "stat"]):
+                    for term in ["Data Science", "Statistics"]:
+                        await el.fill(term)
+                        await target.wait_for_timeout(700)
+                        opts_text = await target.evaluate(_READ_VISIBLE_MENU_JS)
+                        if opts_text and opts_text != ["No options"]:
+                            break
             # Some Greenhouse react-selects hold a static, pre-loaded option list (e.g. GPA
             # buckets like "3.75+", degree names, date ranges) rather than a server-side
             # search. Typing an exact value against these can filter to "No options" even
@@ -522,53 +640,102 @@ async def gh_exec_react_select(page: Page, field: dict, value: str, target=None,
                 await el.fill("")
                 await target.wait_for_timeout(500)
                 opts_text = await target.evaluate(_READ_VISIBLE_MENU_JS)
-            # Pick best match from visible options (first option if no better match)
-            from app_common import fuzzy_pick, pick_decline, pick_gpa_bucket, pick_role_track
-            # For decline values, prefer a decline option; fall back to fuzzy match
+            # Pick best match from visible options (excluding already chosen options in avoid set)
+            available_opts = [o for o in opts_text if o not in (avoid or set())] or opts_text
+            best = None
             if _is_decline:
-                best = pick_decline(opts_text) or fuzzy_pick(opts_text, value)
-            elif _is_pick_any:
-                # Ranked engineering/role-track questions (1st/2nd/3rd engineering
-                # preference) — prefer backend-leaning tracks over a blind first-option pick.
-                best = pick_role_track(opts_text, avoid=avoid) if opts_text else None
-            else:
-                best = fuzzy_pick(opts_text, value) if opts_text else None
-            # GPA range-bucket options (e.g. "3.75+", "3.4 - 3.70") never contain the raw
-            # GPA value as text — fuzzy_pick can't match these. Try numeric-bucket matching
-            # before falling back to a blind first-option pick.
-            if best is None and opts_text and label_match(label, "gpa"):
-                try:
-                    best = pick_gpa_bucket(opts_text, float(value))
-                except (ValueError, TypeError):
-                    pass
-            if best is None and opts_text:
-                if label_match(label, "gender", "sex"):
-                    best = fuzzy_pick(opts_text, "Male") or fuzzy_pick(opts_text, "Man")
-                elif label_match(label, "race", "ethnicity"):
-                    best = fuzzy_pick(opts_text, "Asian")
-                elif label_match(label, "hispanic", "latino"):
-                    best = fuzzy_pick(opts_text, "No")
-                elif label_match(label, "disability"):
-                    best = fuzzy_pick(opts_text, "No") or pick_decline(opts_text)
-                elif label_match(label, "veteran"):
-                    best = fuzzy_pick(opts_text, "not a protected veteran") or pick_decline(opts_text)
+                best = pick_decline(available_opts) or next((o for o in available_opts if o.strip().lower() == value.strip().lower()), None)
+
+            # 1. Exact string match (fast path)
+            if not best:
+                best = next((o for o in available_opts if o.strip().lower() == value.strip().lower()), None)
+
+            # 2. Invoke DeepSeek on the live menu options
+            if not best and available_opts and DEEPSEEK_KEY:
+                avoid_ctx = f" (Do not choose any of these already picked options: {list(avoid)})" if avoid else ""
+                context = f"Candidate target value: {value}.{avoid_ctx}"
+                best = await deepseek_pick_option(label, available_opts, context=context)
+
+            # 3. Deterministic fallbacks (if DeepSeek is offline, unkeyed, or returns None)
+            val_lower = value.strip().lower()
+            if not best and val_lower in ("yes", "no"):
+                for o in available_opts:
+                    o_l = o.strip().lower()
+                    if re.match(r"^" + val_lower + r"(?:[,\s\.\-].*)?$", o_l):
+                        best = o
+                        break
+
+            # Country alias match (e.g. 'United States' matching 'US', 'USA')
+            if not best and any(k in label.lower() for k in ("country", "reside", "residence", "citizenship")):
+                if any(us_term in val_lower for us_term in ("united states", "usa", "us")):
+                    for o in available_opts:
+                        if o.strip().lower() in ("us", "usa", "u.s.", "u.s.a.", "united states", "united states of america"):
+                            best = o
+                            break
+
+            # Numeric range match (e.g. GPA '4.0' matching '3.75 - 4' or '4+', experience '0' matching '0 - 1')
+            if not best and available_opts:
+                best = match_numeric_range(value, available_opts)
+
+            if not best and available_opts:
+                val_norm = re.sub(r'[^a-z0-9]', '', value.lower())
+                best = next((o for o in available_opts if re.sub(r'[^a-z0-9]', '', o.lower()) == val_norm), None)
+            if best is None and available_opts and len(val_norm) > 2:
+                # Substring containment match (only for non-trivial strings to prevent 'no' matching 'now')
+                for o in available_opts:
+                    o_norm = re.sub(r'[^a-z0-9]', '', o.lower())
+                    if val_norm and (val_norm in o_norm or (len(o_norm) > 3 and o_norm in val_norm)):
+                        best = o
+                        break
+
+            # If still no match and it's a GPA field, try candidate GPA from profile or pick highest tier
+            if not best and available_opts and any(k in label.lower() for k in ("gpa", "grade point")):
+                from app_common import EDU
+                cand_gpa = next((e.get("gpa") for e in EDU if e.get("gpa")), "4.0")
+                best = match_numeric_range(cand_gpa, available_opts)
                 if not best:
-                    candidates = [o for o in opts_text if o not in (avoid or set())] or opts_text
-                    best = candidates[0]
+                    best = next((o for o in reversed(available_opts) if not re.search(r'below|under|<', o, re.I)), available_opts[-1])
+
+            # If still no match and it's a location preference, walk candidate's location priority ladder
+            if not best and available_opts and any(k in label.lower() for k in ("location", "office", "city")):
+                from app_common import LIBRARY
+                ladder = LIBRARY.get("routing_priorities", {}).get("onsite_us_location_priority_ladder", [])
+                for ladder_loc in ladder:
+                    loc_terms = [t.strip().lower() for t in re.split(r'[,/()]+', ladder_loc) if len(t.strip()) > 2]
+                    for o in available_opts:
+                        if any(lt in o.lower() for lt in loc_terms):
+                            best = o
+                            break
+                    if best:
+                        break
+            if not best and available_opts:
+                if any(k in label.lower() for k in ("gpa", "grade point")):
+                    best = next((o for o in reversed(available_opts) if not re.search(r'below|under|<', o, re.I)), available_opts[-1])
+                else:
+                    best = available_opts[0]
             if best:
-                # Click the matching option element — scope to the currently-visible menu
-                # only (see _READ_VISIBLE_MENU_JS above: duplicated fields from "Add another"
-                # can leave multiple menu containers in the DOM at once).
-                visible_menu = target.locator(".select__menu-list:visible, [class*='select__menu']:visible, [class*='menu']:visible").first
-                opt_loc = visible_menu.locator("[class*='option'], .select__option, [id*='option']").filter(
-                    has_text=best[:60]).first
-                if await opt_loc.count():
-                    await opt_loc.click(timeout=3000)
+                # Pure exact match on option text — no fuzzy regex or substring containment
+                best_clean = best.strip()
+                target_opt = None
+                for opt in await menu.locator("[class*='option'], [id*='-option-']").all():
+                    txt = (await opt.inner_text()).strip()
+                    if txt == best_clean:
+                        target_opt = opt
+                        break
+                if not target_opt:
+                    for opt in await target.locator("div.select__option:visible, [class*='select__option']:visible").all():
+                        txt = (await opt.inner_text()).strip()
+                        if txt == best_clean:
+                            target_opt = opt
+                            break
+
+                if target_opt:
+                    await target_opt.click(timeout=3000)
                     await target.wait_for_timeout(300)
                     print(f"    ✓ rsel  [{idx}] {label!r} = {best!r}")
                     return best
-            # Fallback: click first option (scoped to the visible menu, see above)
-            first_opt = target.locator("[class*='option']:visible, [id*='option']:visible").first
+            # Fallback: click first option (scoped to visible options)
+            first_opt = target.locator("div.select__option:visible, [class*='select__option']:visible").first
             if await first_opt.count():
                 first_text = await first_opt.inner_text()
                 await first_opt.click(timeout=3000)
@@ -660,11 +827,9 @@ def _write_report(job_url: str, status: str, fields_filled: int, fields_total: i
 
 
 def _mark_applied(job_url: str):
-    """Mark this job Applied in data/jobs_tracker.csv after a confirmed successful submit.
-    Mirrors app_workday.py's post-submit tracker update (mark_applied_by_url) — lazy import,
-    non-fatal on failure so a tracker hiccup never masks a real, successful submission."""
+    """Mark this job Applied in data/jobs_tracker.csv after a confirmed successful submit."""
     try:
-        from job_tracker import mark_applied_by_url
+        from tracker_db import mark_applied_by_url
         mark_applied_by_url(job_url)
     except Exception as e:
         print(f"  [tracker] mark-applied failed (non-fatal): {e}")
@@ -672,7 +837,7 @@ def _mark_applied(job_url: str):
 
 # ── Main applicator ───────────────────────────────────────────────────────────
 
-async def main(job_url: str, headed: bool = False):
+async def main(job_url: str, headed: bool = False, no_submit: bool = False):
     global _frame
     _report["started"] = datetime.datetime.now().isoformat()
 
@@ -690,16 +855,20 @@ async def main(job_url: str, headed: bool = False):
             headed,
             extra_headers={
                 "Accept-Language": "en-US,en;q=0.9",
-                "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Referer":         "https://www.google.com/",
             },
         )
 
         async def _has_real_form() -> bool:
             try:
-                if await page.locator('input[type="text"], input[type="email"], input[name="first_name"], input[name="email"], input[name="last_name"]').first.is_visible(timeout=1500):
-                    return True
-                return (await page.locator('input[type="file"]').count()) > 0
+                for ctx in [page] + page.frames:
+                    try:
+                        if await ctx.locator('input[type="text"], input[type="email"], input[name="first_name"], input[name="email"], input[name="last_name"]').first.is_visible(timeout=1000):
+                            return True
+                        if (await ctx.locator('input[type="file"]').count()) > 0:
+                            return True
+                    except Exception:
+                        pass
+                return False
             except Exception:
                 return False
 
@@ -798,19 +967,28 @@ async def main(job_url: str, headed: bool = False):
 
             # ── Step 2: Detect Greenhouse embed iframe ────────────────────────
             _frame = None
-            for iframe_sel in [
-                "iframe[src*='greenhouse']",
-                "#grnhse_iframe",
-                "iframe[src*='boards.greenhouse']",
-            ]:
-                try:
-                    el = page.locator(iframe_sel).first
-                    if await el.is_visible(timeout=2000):
-                        _frame = await el.content_frame()
-                        print(f"[GH] Detected Greenhouse iframe ({iframe_sel})")
-                        break
-                except Exception:
-                    pass
+            for f in page.frames:
+                if "greenhouse" in f.url and ("job_app" in f.url or "jobs" in f.url or "embed" in f.url):
+                    _frame = f
+                    print(f"[GH] Detected Greenhouse iframe via frames list: {f.url[:80]}…")
+                    break
+            if _frame is None:
+                for iframe_sel in [
+                    "iframe[src*='greenhouse']",
+                    "#grnhse_iframe",
+                    "iframe[src*='boards.greenhouse']",
+                ]:
+                    try:
+                        el = page.locator(iframe_sel).first
+                        if await el.count():
+                            handle = await el.element_handle()
+                            if handle:
+                                _frame = await handle.content_frame()
+                                if _frame:
+                                    print(f"[GH] Detected Greenhouse iframe via handle ({iframe_sel})")
+                                    break
+                    except Exception:
+                        pass
 
             target = _tgt(page)
 
@@ -841,267 +1019,201 @@ async def main(job_url: str, headed: bool = False):
                     except Exception:
                         break
 
-            # Scan fields
-            fields = await scan_fields(page)
-            print(f"[GH] Scanned {len(fields)} fields")
+            if not DEEPSEEK_KEY:
+                raise RuntimeError("DEEPSEEK_API_KEY is required in data/.env.")
 
-            # Resolve answers
-            if DEEPSEEK_KEY:
-                print("[GH] Sending fields to DeepSeek …")
-                answers = await deepseek_fill_page(fields, profile_override=runtime_profile)
-                print(f"[GH] DeepSeek returned {len(answers)} answers")
-                # Merge: rule-based fills gaps DeepSeek left
-                ds_indices = {a["index"] for a in answers}
-                rule_answers = rule_based_fill_fields(fields)
-                for ra in rule_answers:
-                    if ra["index"] not in ds_indices:
-                        answers.append(ra)
-            else:
-                print("[GH] Rule-based fallback (no DeepSeek key) …")
-                answers = rule_based_fill_fields(fields)
-
-            # Build index → value map
-            answer_map = {a["index"]: a["value"] for a in answers}
-
-            # Override repeated education blocks so each one maps to a DIFFERENT EDU entry.
-            # rule_based_answer only ever knows about EDU[0] (it has no concept of "which
-            # education block is this"), so without this every block — including ones added
-            # by "Add another" above — would get the same (most recent) degree repeated.
-            #
-            # Block boundaries are detected structurally (a new "School" field starts a new
-            # block) rather than by a fixed field count — Greenhouse boards vary the shape of
-            # an education block (some have just School/Degree/Discipline/Start-year; others
-            # add Start-month/End-month/End-year). A hardcoded block size misaligns silently
-            # on any shape it wasn't tuned for.
-            if len(EDU) > 1:
-                _edu_field_labels = ("school", "institution", "university", "college",
-                                     "degree", "discipline", "major", "field of study",
-                                     "start date", "start year", "end date", "end year")
-                edu_group_fields = [f for f in fields
-                                    if label_match(f.get("label", ""), *_edu_field_labels)
-                                    and not label_match(f.get("label", ""), "schoolwork", "project", "initiative")
-                                    and len(f.get("label", "")) < 60
-                                    and f.get("tag") != "textarea"
-                                    and (f.get("isSelectInput") or f.get("type") in ("number", "select", "text")
-                                         or "start" in f.get("label", "").lower()
-                                         or "end" in f.get("label", "").lower())]
-
-                def _is_school_field(f):
-                    lbl = f.get("label", "")
-                    if label_match(lbl, "schoolwork", "project", "initiative") or len(lbl) >= 60 or f.get("tag") == "textarea":
-                        return False
-                    return label_match(lbl, "school", "institution", "university", "college")
-
-                # Split into blocks: each block starts at a School field and runs until the
-                # next School field (or end of list).
-                blocks = []
-                for f in edu_group_fields:
-                    if _is_school_field(f) or not blocks:
-                        blocks.append([f])
-                    else:
-                        blocks[-1].append(f)
-
-                for entry_idx, block in enumerate(blocks):
-                    if entry_idx >= len(EDU):
-                        break
-                    entry = EDU[entry_idx]
-                    for f in block:
-                        # IMMUTABILITY: Never overwrite an LLM answer or textarea with education defaults
-                        if DEEPSEEK_KEY and f["index"] in ds_indices:
-                            continue
-                        if f.get("tag") == "textarea":
-                            continue
-
-                        lbl = f.get("label", "")
-                        if _is_school_field(f):
-                            answer_map[f["index"]] = entry["institution_variants"][0]
-                        elif label_match(lbl, "degree"):
-                            answer_map[f["index"]] = entry.get("degree_type", "Bachelor's Degree")
-                        elif label_match(lbl, "discipline", "major", "field of study"):
-                            answer_map[f["index"]] = entry.get("major_search_term") or entry["major_variants"][0]
-                        elif re.match(r"^\s*start\s+(date\s+)?month\s*\*?\s*$", lbl.strip(), re.I):
-                            answer_map[f["index"]] = entry.get("start_month", "")
-                        elif re.match(r"^\s*end\s+(date\s+)?month\s*\*?\s*$", lbl.strip(), re.I):
-                            answer_map[f["index"]] = entry.get("end_month", "")
-                        elif label_match(lbl, "start date", "start year"):
-                            answer_map[f["index"]] = str(entry.get("start_year", ""))
-                        elif label_match(lbl, "end date", "end year"):
-                            answer_map[f["index"]] = str(entry.get("end_year", ""))
-
-            print(f"[GH] {len(answer_map)} fields to fill")
-
-            # Execute answers (dedup: fill only the first LinkedIn / Website)
+            MAX_PASSES = 3
             filled = 0
             _seen_once: set = set()
             _DEDUP_KWS = ("linkedin", "website")
-            # Track option texts already picked for "__PICK_FIRST_OPTION__" sentinel fields
-            # (ranked-preference groups like 1st/2nd/3rd engineering preference) so each
-            # pick in the group differs instead of repeating the same option.
-            _pick_any_seen: set = set()
-            for field in fields:
-                val = answer_map.get(field["index"])
-                if not val:
-                    continue
-                lbl_low = field.get("label", "").lower()
-                dk = next((k for k in _DEDUP_KWS if k in lbl_low), None)
-                if dk:
-                    if dk in _seen_once:
-                        print(f"    ⊘ skip  [{field['index']}] {field.get('label')!r} (duplicate {dk})")
-                        continue
-                    _seen_once.add(dk)
-                picked = await execute_answer(page, field, val, target=target, avoid=_pick_any_seen)
-                if val == "__PICK_FIRST_OPTION__" and picked:
-                    _pick_any_seen.add(picked)
-                filled += 1
+            _group_picked: dict[str, set] = {}
 
-            # Some Greenhouse EEO questions only render AFTER a prior question is answered
-            # (e.g. "Please identify your race" appears only once "Are you Hispanic/Latino?"
-            # has a value). Re-scan for fields that weren't present in the original scan and
-            # fill any that now have a rule-based answer.
-            await page.wait_for_timeout(500)
-            fields_after = await scan_fields(page)
-            seen_labels = {f.get("label", "") for f in fields}
-            new_fields = [f for f in fields_after if f.get("label", "") not in seen_labels]
-            if new_fields:
-                print(f"[GH] {len(new_fields)} new field(s) revealed after filling — re-checking …")
-                new_answers = rule_based_fill_fields(new_fields)
-                new_answer_map = {a["index"]: a["value"] for a in new_answers}
-                for field in new_fields:
-                    val = new_answer_map.get(field["index"])
+            def _get_pref_group(label: str) -> str | None:
+                lbl = label.lower()
+                is_ranked = any(k in lbl for k in ("first", "second", "third", "1st", "2nd", "3rd", "primary", "secondary", "tertiary"))
+                if not is_ranked:
+                    return None
+                if any(k in lbl for k in ("location", "office", "city")):
+                    return "pref_group_location"
+                if any(k in lbl for k in ("engineer", "profile", "discipline", "team", "track", "domain", "role")):
+                    return "pref_group_engineering"
+                return "pref_group_generic"
+
+            all_scanned_fields: list[dict] = []
+            previously_seen_labels: set = set()
+
+            for pass_num in range(1, MAX_PASSES + 1):
+                fields = await scan_fields(page)
+                all_scanned_fields = fields
+
+                if pass_num == 1:
+                    print(f"[GH] Pass 1: Scanned {len(fields)} fields")
+                    to_fill = fields
+                    previously_seen_labels = {f.get("label", "") for f in fields}
+                else:
+                    # In subsequent passes, collect:
+                    # 1. Any required field that is still empty
+                    # 2. Any newly rendered field that wasn't present in the earlier scan
+                    to_fill = []
+                    current_labels = {f.get("label", "") for f in fields}
+                    for f in fields:
+                        v = f.get("value", "").strip()
+                        is_empty = not v or v.lower() in ("select...", "-- select --", "select one")
+                        if is_empty and f.get("required"):
+                            to_fill.append(f)
+                        elif f.get("label", "") not in previously_seen_labels and is_empty:
+                            to_fill.append(f)
+
+                    if not to_fill:
+                        print(f"[GH] Pass {pass_num}: ✓ Form complete — 0 unfilled required fields remaining.")
+                        break
+
+                    print(f"[GH] Pass {pass_num}: Found {len(to_fill)} unfilled or newly revealed field(s) — re-evaluating with DeepSeek …")
+                    previously_seen_labels.update(current_labels)
+
+                print(f"[GH] Sending {len(to_fill)} field(s) to DeepSeek …")
+                answers = await deepseek_fill_page(to_fill, profile_override=runtime_profile)
+                print(f"[GH] DeepSeek returned {len(answers)} answer(s)")
+                answer_map = {a["index"]: a["value"] for a in answers}
+
+                # Override repeated education blocks on pass 1
+                if pass_num == 1 and len(EDU) > 1:
+                    _edu_field_labels = ("school", "institution", "university", "college",
+                                         "degree", "discipline", "major", "field of study",
+                                         "start date", "start year", "end date", "end year")
+                    edu_group_fields = [f for f in to_fill
+                                        if label_match(f.get("label", ""), *_edu_field_labels)
+                                        and not label_match(f.get("label", ""), "schoolwork", "project", "initiative")
+                                        and len(f.get("label", "")) < 60
+                                        and f.get("tag") != "textarea"
+                                        and (f.get("isSelectInput") or f.get("type") in ("number", "select", "text")
+                                             or "start" in f.get("label", "").lower()
+                                             or "end" in f.get("label", "").lower())]
+
+                    def _is_school_field(f):
+                        lbl = f.get("label", "")
+                        if label_match(lbl, "schoolwork", "project", "initiative") or len(lbl) >= 60 or f.get("tag") == "textarea":
+                            return False
+                        return label_match(lbl, "school", "institution", "university", "college")
+
+                    blocks = []
+                    for f in edu_group_fields:
+                        if _is_school_field(f) or not blocks:
+                            blocks.append([f])
+                        else:
+                            blocks[-1].append(f)
+
+                    for entry_idx, block in enumerate(blocks):
+                        if entry_idx >= len(EDU):
+                            break
+                        entry = EDU[entry_idx]
+                        for f in block:
+                            if DEEPSEEK_KEY and answer_map.get(f["index"]):
+                                continue
+                            if f.get("tag") == "textarea":
+                                continue
+
+                            lbl = f.get("label", "")
+                            if _is_school_field(f):
+                                answer_map[f["index"]] = entry["institution_variants"][0]
+                            elif label_match(lbl, "degree"):
+                                answer_map[f["index"]] = entry.get("degree_type", "Bachelor's Degree")
+                            elif label_match(lbl, "discipline", "major", "field of study"):
+                                answer_map[f["index"]] = entry.get("major_search_term") or entry["major_variants"][0]
+                            elif re.match(r"^\s*start\s+(date\s+)?month\s*\*?\s*$", lbl.strip(), re.I):
+                                answer_map[f["index"]] = entry.get("start_month", "")
+                            elif re.match(r"^\s*end\s+(date\s+)?month\s*\*?\s*$", lbl.strip(), re.I):
+                                answer_map[f["index"]] = entry.get("end_month", "")
+                            elif label_match(lbl, "start date", "start year"):
+                                answer_map[f["index"]] = str(entry.get("start_year", ""))
+                            elif label_match(lbl, "end date", "end year"):
+                                answer_map[f["index"]] = str(entry.get("end_year", ""))
+
+                print(f"[GH] Executing {len(answer_map)} field answers …")
+                for field in to_fill:
+                    val = answer_map.get(field["index"])
                     if not val:
                         continue
-                    await execute_answer(page, field, val, target=target)
-                    filled += 1
-                fields = fields_after
+                    lbl_low = field.get("label", "").lower()
+                    dk = next((k for k in _DEDUP_KWS if k in lbl_low), None)
+                    if dk:
+                        if dk in _seen_once:
+                            print(f"    ⊘ skip  [{field['index']}] {field.get('label')!r} (duplicate {dk})")
+                            continue
+                        _seen_once.add(dk)
 
-            print(f"\n[GH] Filled {filled}/{len(fields)} fields.")
+                    group_key = _get_pref_group(field.get("label", ""))
+                    avoid_set = _group_picked.setdefault(group_key, set()) if group_key else set()
+
+                    picked = await execute_answer(page, field, val, target=target, avoid=avoid_set)
+                    if group_key and picked:
+                        avoid_set.add(picked)
+                    filled += 1
+
+                await page.wait_for_timeout(1000)
+
+            print(f"\n[GH] Filled {filled}/{len(all_scanned_fields)} fields.")
 
             # Screenshot before pause
             ss_path = ARTIFACTS / "gh_before_submit.png"
             await page.screenshot(path=str(ss_path), full_page=True)
             print(f"[GH] Screenshot saved → {ss_path.name}")
 
+            if no_submit:
+                print("\n" + "=" * 60)
+                print("  DRY-RUN COMPLETE (--no-submit active)")
+                print(f"  All {filled} fields filled and validated.")
+                print(f"  Screenshot saved to {ss_path.name}")
+                print("  Application was NOT submitted.")
+                print("=" * 60)
+                _write_report(job_url, "dry_run_success", filled, len(fields))
+                return
+
             _write_report(job_url, "ready_to_submit", filled, len(fields))
 
-            # ── PAUSE — do NOT auto-submit ────────────────────────────────────
-            print("\n" + "="*60)
-            print("  REVIEW COMPLETE — BOT HAS STOPPED")
-            print("  Open the browser window to inspect / correct any fields.")
-            print("  Press [Enter] here when ready to SUBMIT the application.")
-            print("  Press Ctrl+C to CANCEL without submitting.")
-            print("="*60)
-
             if headed:
+                print("\n" + "=" * 60)
+                print("  FORM READY FOR MANUAL SUBMIT — BOT HAS STOPPED")
+                print("  1. Inspect the pre-filled fields in the browser window.")
+                print("  2. Click 'Submit Application' yourself in the browser.")
+                print("  3. Solve any CAPTCHA / verification code if prompted.")
+                print("  4. Once submitted, press [Enter] here to confirm and update tracker.")
+                print("     Type 's' (or 'skip') to skip/snooze this job for 3 days.")
+                print("  Press Ctrl+C to CANCEL without updating tracker.")
+                print("=" * 60)
                 try:
-                    await asyncio.to_thread(input, "")
+                    user_input = await asyncio.to_thread(input, "  Action [Enter=submit / s=skip 3d / q=cancel]: ")
                 except (KeyboardInterrupt, EOFError):
-                    print("[GH] Cancelled — application NOT submitted.")
-                    _write_report(job_url, "cancelled", filled, len(fields))
+                    print("[GH] Cancelled by user — application not marked as applied.")
+                    _write_report(job_url, "cancelled_by_user", filled, len(fields))
                     return
 
-                # Click submit
-                url_before_submit = page.url
-                submitted = await page.evaluate("""() => {
-                    const btn = Array.from(document.querySelectorAll('button[type="submit"], input[type="submit"]'))
-                        .find(b => /submit|apply/i.test(b.innerText || b.value || ''));
-                    if (btn) { btn.click(); return true; }
-                    return false;
-                }""")
-                if submitted:
-                    await page.wait_for_timeout(3000)
+                user_input = user_input.strip().lower()
+                m = re.match(r"^s(?:kip)?\s*(\d+)?$", user_input)
+                if m or user_input in ("snooze", "3"):
+                    days = int(m.group(1)) if (m and m.group(1)) else 3
+                    snooze_until = snooze_job_by_url(job_url, days=days, reason=f"Skipped by user for {days} days")
+                    print(f"\n[GH] ⏸ Job snoozed for {days} days (until {snooze_until}).")
+                    _write_report(job_url, f"snoozed_{days}_days", filled, len(fields))
+                    sys.exit(2)
+                elif user_input in ("q", "cancel", "abort"):
+                    print("[GH] Cancelled by user — application not marked as applied.")
+                    _write_report(job_url, "cancelled_by_user", filled, len(fields))
+                    return
 
-                    # Greenhouse/MyGreenhouse sometimes gates final submission behind an
-                    # email verification-code step AFTER the submit click (not before) — the
-                    # click itself doesn't mean the application actually went through. Check
-                    # for that before declaring success and closing the browser out from
-                    # under the user.
-                    verification_pending = await page.evaluate("""() => {
-                        const text = document.body.innerText.toLowerCase();
-                        return /verification code|check your email|enter the code|confirm your email|one-time code|otp/.test(text);
-                    }""")
-
-                    # A successful click does NOT mean the application actually went through —
-                    # Greenhouse can silently reject the click (client-side validation error,
-                    # invisible reCAPTCHA v3 scoring the bot-driven interaction as suspicious,
-                    # a disabled button) and the form just stays exactly as it was. Confirmed
-                    # happening in practice: a run reported "✓ Submitted!" while the
-                    # after-submit screenshot showed the identical unsubmitted form still on
-                    # screen, still under an active grecaptcha-badge. Require UNAMBIGUOUS
-                    # evidence of success — confirmation text or a URL change. Do NOT treat
-                    # "the form element seems gone" as evidence: on this exact failure mode
-                    # the <form> was still fully present, and a one-time synchronous read of
-                    # whether the submit button's text still matches "submit"/"apply" is easy
-                    # to catch mid-transient-relabel (e.g. a brief "Submitting..." state) and
-                    # produces a false positive even when the submission was actually rejected.
-                    recaptcha_present = await page.evaluate("""() => {
-                        return !!document.querySelector('.grecaptcha-badge, [class*="recaptcha"], iframe[src*="recaptcha"]');
-                    }""")
-                    actually_submitted = await page.evaluate("""() => {
-                        const text = document.body.innerText.toLowerCase();
-                        return /thank you for applying|application (has been |was )?(received|submitted)|we('ve| have) received your application|your application (has been|was) submitted/.test(text);
-                    }""") or page.url != url_before_submit
-
-                    ss2 = ARTIFACTS / "gh_after_submit.png"
+                await page.wait_for_timeout(1000)
+                ss2 = ARTIFACTS / "gh_after_submit.png"
+                try:
                     await page.screenshot(path=str(ss2), full_page=True)
+                    print(f"[GH] Post-submit screenshot saved → {ss2.name}")
+                except Exception:
+                    pass
 
-                    if verification_pending:
-                        print(f"[GH] ⚠ Submit click registered, but the page is now asking for an "
-                              f"EMAIL VERIFICATION CODE — the application has NOT actually gone "
-                              f"through yet. Screenshot → {ss2.name}")
-                        print("\n" + "="*60)
-                        print("  CHECK YOUR EMAIL for the verification code and enter it in the")
-                        print("  browser window to complete the submission.")
-                        print("  The browser stays open and waits here — take as long as you need.")
-                        print("  Press [Enter] once the application is fully submitted.")
-                        print("  Press Ctrl+C to abandon (this closes the browser without submitting).")
-                        print("="*60)
-                        try:
-                            await asyncio.to_thread(input, "")
-                        except (KeyboardInterrupt, EOFError):
-                            print("[GH] Cancelled — closing browser. Application may not be submitted.")
-                            _write_report(job_url, "cancelled_during_email_verification", filled, len(fields))
-                            return
-                        ss3 = ARTIFACTS / "gh_after_verification.png"
-                        await page.screenshot(path=str(ss3), full_page=True)
-                        print(f"[GH] ✓ Confirmed by user. Screenshot → {ss3.name}")
-                        _write_report(job_url, "submitted_after_verification", filled, len(fields))
-                        _mark_applied(job_url)
-                    elif not actually_submitted:
-                        _reason = ("this page has an active reCAPTCHA badge — invisible reCAPTCHA "
-                                   "v3 likely scored the bot-driven click as suspicious and Greenhouse "
-                                   "silently rejected the submission server-side") if recaptcha_present \
-                            else "a validation error or disabled button may have silently blocked it"
-                        print(f"[GH] ⚠ Clicked Submit, but the page shows NO confirmation and the "
-                              f"form is still present — the application likely did NOT go through "
-                              f"({_reason}). Screenshot → {ss2.name}")
-                        print("\n" + "="*60)
-                        print("  CHECK THE BROWSER WINDOW — look for a validation error or")
-                        print("  CAPTCHA, fix it, and click Submit yourself if needed.")
-                        print("  The browser stays open and waits here — take as long as you need.")
-                        print("  Press [Enter] once the application is fully submitted.")
-                        print("  Press Ctrl+C to abandon (this closes the browser without submitting).")
-                        print("="*60)
-                        try:
-                            await asyncio.to_thread(input, "")
-                        except (KeyboardInterrupt, EOFError):
-                            print("[GH] Cancelled — closing browser. Application may not be submitted.")
-                            _write_report(job_url, "cancelled_unconfirmed_submit", filled, len(fields))
-                            return
-                        ss3 = ARTIFACTS / "gh_after_verification.png"
-                        await page.screenshot(path=str(ss3), full_page=True)
-                        print(f"[GH] ✓ Confirmed by user. Screenshot → {ss3.name}")
-                        _write_report(job_url, "submitted_after_manual_confirmation", filled, len(fields))
-                        _mark_applied(job_url)
-                    else:
-                        print(f"[GH] ✓ Submitted! Screenshot → {ss2.name}")
-                        _write_report(job_url, "submitted", filled, len(fields))
-                        _mark_applied(job_url)
-                else:
-                    print("[GH] Could not find submit button — submit manually in the browser.")
-                    _write_report(job_url, "submit_button_not_found", filled, len(fields))
+                print(f"[GH] ✓ Confirmed by user! Marking job Applied in tracker …")
+                _write_report(job_url, "submitted_manual", filled, len(fields))
+                _mark_applied(job_url)
             else:
-                # Headless: just report ready; user can re-run with --show to submit
-                print("[GH] Headless mode — run with --show to review and submit.")
+                print("[GH] Headless mode — run with --show to review and manually submit.")
                 _write_report(job_url, "ready_to_submit_headless", filled, len(fields))
 
         except Exception as e:
@@ -1126,5 +1238,6 @@ if __name__ == "__main__":
     )
     parser.add_argument("job_url", help="Greenhouse listing URL (job-boards.greenhouse.io or company page with ?gh_jid=)")
     parser.add_argument("--show", action="store_true", help="Show Chrome window (required to submit)")
+    parser.add_argument("--no-submit", action="store_true", help="Fill form and verify without submitting (dry-run)")
     args = parser.parse_args()
-    asyncio.run(main(args.job_url, headed=args.show))
+    asyncio.run(main(args.job_url, headed=args.show, no_submit=args.no_submit))

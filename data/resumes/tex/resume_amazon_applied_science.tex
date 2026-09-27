@@ -1,0 +1,128 @@
+%-------------------------
+% Resume in Latex - Amazon: Applied Scientist
+%------------------------
+
+\documentclass[letterpaper,11pt]{article}
+
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\input{glyphtounicode}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\addtolength{\oddsidemargin}{-0.5in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1in}
+\addtolength{\topmargin}{-.5in}
+\addtolength{\textheight}{1.0in}
+\urlstyle{same}
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-5pt}]
+
+\pdfgentounicode=1
+
+\newcommand{\resumeItem}[1]{\item\small{{#1 \vspace{-2pt}}}}
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-2pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & #2 \\
+      \textit{\small#3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-7pt}
+}
+\newcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \small#1 & #2 \\
+    \end{tabular*}\vspace{-7pt}
+}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-5pt}}
+
+\begin{document}
+
+\begin{center}
+    \textbf{\Huge \scshape Joshua Li} \\ \vspace{1pt}
+    \small US Citizen $|$ (480) 616-8194 $|$ 
+    \href{mailto:joshualingli@gmail.com}{\underline{joshualingli@gmail.com}} $|$ 
+    \href{https://linkedin.com/in/joshualingli}{\underline{linkedin.com/in/joshualingli}} $|$
+    \href{https://github.com/faradayj}{\underline{github.com/faradayj}}
+\end{center}
+
+\section{Education}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Arizona State University}{Tempe, AZ}
+      {Master of Science in Computer Science (GPA: 4.0)}{Aug. 2025 -- Dec. 2026 (Expected)}
+    \resumeSubheading
+      {University of California, San Diego}{San Diego, CA}
+      {Bachelor of Science in Data Science (GPA: 3.9)}{Sept. 2021 -- Mar. 2025}
+  \resumeSubHeadingListEnd
+
+\section{Experience}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Applied Scientist}{Dec. 2025 -- Present}
+      {BILL}{San Jose, CA}
+      \resumeItemListStart
+        \resumeItem{Architected and deployed an agentic LLM triage pipeline using Claude APIs, automating root-cause data mining across linked entity graphs to synthesize structural risk signals and generate structured incident summaries.}
+        \resumeItem{Engineered an automated data mining and rule induction engine using adaptive-floor beam search over 6-month rolling datasets, increasing precision by 1.5x and recall by 3 pp while reducing manual review referrals by 21\%.}
+        \resumeItem{Developed automated data curation and graph resolution pipelines in NetworkX on AWS SageMaker (90K nodes, 91K edges), implementing dynamic noise scrubbing to curate golden datasets with 93.5\% precision and 99.4\% recall.}
+        \resumeItem{Built production health monitoring and scheduled ETL pipelines using AWS SageMaker and Starburst (Trino), deploying automated alerts and real-time metric drift anomaly detection.}
+      \resumeItemListEnd
+
+    \resumeSubheading
+      {Data Science \& Systems Research Intern}{June 2022 -- Sept. 2022}
+      {Intel Corporation}{Folsom, CA}
+      \resumeItemListStart
+        \resumeItem{Simulated complex applied science and ML pipelines in Python to benchmark throughput, memory scaling, and computational bottlenecks across diverse enterprise workflows, improving pipeline efficiency by 20\%.}
+      \resumeItemListEnd
+
+    \resumeSubheading
+      {Software \& Systems Intern}{July 2023 -- Oct. 2023}
+      {Single Particle LLC}{San Diego, CA}
+      \resumeItemListStart
+        \resumeItem{Engineered an automated LLM requirement extraction tool using prompt engineering to parse domain-specific hardware dependencies and technical specifications for high-performance imaging workstations.}
+      \resumeItemListEnd
+  \resumeSubHeadingListEnd
+
+\section{Projects}
+    \resumeSubHeadingListStart
+      \resumeProjectHeading
+          {\textbf{DE-HNN: Scalable Graph Learning \& Pipeline Optimization} $|$ \emph{PyTorch, PyG, CUDA, NetworkX}}{2024}
+          \resumeItemListStart
+            \resumeItem{Optimized deep learning training pipelines in PyTorch and CUDA across 6 large-scale topological graph datasets (460K to 1.3M nodes), predicting demand and routing congestion under strict GPU memory constraints.}
+            \resumeItem{Built automated model introspection and benchmarking workflows, applying layer pruning and early stopping to cut training runtime by 89.3\% and peak VRAM usage by 38.8\% within 6\% of heavy baseline performance.}
+          \resumeItemListEnd
+    \resumeSubHeadingListEnd
+
+\section{Technical Skills}
+ \begin{itemize}[leftmargin=0.15in, label={}]
+    \small{\item{
+     \textbf{Languages}{: Python (Production), SQL (Trino/Postgres), C/C++, Java, R, MATLAB} \\
+     \textbf{Applied ML}{: LLM Agents, AWS SageMaker, Data Mining, Heuristic Search (Beam Search), Golden Dataset Curation, Scikit-Learn, PyTorch, PyG, NetworkX, Anomaly Detection} \\
+     \textbf{Infrastructure \& Cloud}{: AWS (SageMaker, S3), Databricks, Starburst (Trino), Docker, Git, CI/CD, Linux} \\
+     \textbf{Data Visualization}{: Tableau, DataVisor BI, React, D3.js, Plotly}
+    }}
+ \end{itemize}
+
+\end{document}
