@@ -1,17 +1,19 @@
 """
 scraper.py - Web scraping and job extraction utilities.
 Handles scraping job descriptions via Greenhouse APIs, iCIMS endpoints,
-and headless Playwright fallback, as well as parsing SimplifyJobs markdown tables.
+and visible Playwright fallback, as well as parsing SimplifyJobs markdown tables.
 """
 
 import re
+import html
+import asyncio
 import requests
 from pathlib import Path
-from urllib.parse import urlparse, parse_qsl
+from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse, urljoin
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 
-from app_common import _find_chrome
+from browser_utils import _find_chrome
 from tracker_db import clean_url
 
 EXPIRED_INDICATORS = [
@@ -173,10 +175,108 @@ def _fetch_greenhouse_api(board_token: str, job_id: str) -> str | None:
             data = resp.json()
             title = data.get("title", "")
             location = data.get("location", {}).get("name", "")
-            soup = BeautifulSoup(data.get("content", ""), 'html.parser')
-            return f"{title}\n{location}\n\n{soup.get_text()}".strip()
+            soup = BeautifulSoup(html.unescape(data.get("content", "")), 'html.parser')
+            content = soup.get_text("\n", strip=True)
+            if len(content) >= 300:
+                return f"{title}\n{location}\n\n{content}".strip()
     except Exception as e:
         print(f"[!] Greenhouse API fetch exception ({board_token}/{job_id}): {e}")
+    return None
+
+
+def greenhouse_board_tokens(markup: str, page_url: str) -> list[str]:
+    """Discover board identities from published API/script/iframe URLs."""
+    soup = BeautifulSoup(markup, 'html.parser')
+    sources = [markup]
+    sources.extend(urljoin(page_url, node.get(attribute, ""))
+                   for tag, attribute in (("iframe", "src"), ("script", "src"), ("a", "href"))
+                   for node in soup.find_all(tag))
+    tokens = []
+    for source in sources:
+        for token in re.findall(r"(?:boards-api\.greenhouse\.io/v1/boards/|(?:boards|job-boards)\.greenhouse\.io/)([\w-]+)", source):
+            if token != "embed" and token not in tokens:
+                tokens.append(token)
+        parsed = urlparse(source)
+        if parsed.hostname == "boards.greenhouse.io" and parsed.path.startswith("/embed/"):
+            token = dict(parse_qsl(parsed.query)).get("for")
+            if token and token not in tokens:
+                tokens.append(token)
+    return tokens
+
+
+def extract_icims_content(markup: str) -> str | None:
+    soup = BeautifulSoup(markup, 'html.parser')
+    content = soup.select_one('.iCIMS_JobContent')
+    if content:
+        text = content.get_text("\n", strip=True)
+        if len(text) >= 300:
+            return text
+    return None
+
+
+def fetch_icims_content(url: str) -> str | None:
+    """Request iCIMS's content view rather than accepting its branding shell."""
+    parsed = urlparse(url)
+    query = dict(parse_qsl(parsed.query))
+    query["in_iframe"] = "1"
+    content_url = urlunparse(parsed._replace(query=urlencode(query)))
+    try:
+        response = requests.get(content_url, timeout=15)
+        if response.status_code == 200:
+            return extract_icims_content(response.text)
+    except requests.RequestException as exc:
+        print(f"[!] iCIMS content request failed: {exc}")
+    return None
+
+
+def discover_greenhouse_content(url: str, markup: str | None = None) -> str | None:
+    job_id = dict(parse_qsl(urlparse(url).query)).get("gh_jid")
+    if not job_id:
+        return None
+    if markup is None:
+        try:
+            response = requests.get(url, timeout=15)
+            response.raise_for_status()
+            markup = response.text
+        except requests.RequestException:
+            return None
+    for token in greenhouse_board_tokens(markup, url):
+        content = _fetch_greenhouse_api(token, job_id)
+        if content:
+            return content
+    return None
+
+
+def listing_url(url: str) -> str:
+    """Switch supported ATS application views to the same job's listing view."""
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    path = parsed.path
+    if host.endswith("ashbyhq.com"):
+        path = re.sub(r"/application/?$", "", path)
+    elif host.endswith("breezy.hr") or host in ("jobs.lever.co", "jobs.eu.lever.co", "apply.workable.com"):
+        path = re.sub(r"/apply/?$", "", path)
+    return urlunparse(parsed._replace(path=path))
+
+
+def fetch_workday_content(url: str) -> str | None:
+    """Use the same CXS posting endpoint already used by workday_scan."""
+    match = re.match(r'https://([^.]+)\.(wd\d+)\.myworkdayjobs\.com/'
+                     r'(?:[a-z]{2}-[A-Z]{2}/)?([^/]+)/job/(.+)', url)
+    if not match:
+        return None
+    tenant, server, site, path = match.groups()
+    endpoint = f"https://{tenant}.{server}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/job/{path}"
+    try:
+        response = requests.get(endpoint, timeout=15)
+        response.raise_for_status()
+        posting = response.json().get("jobPostingInfo", {})
+        description = BeautifulSoup(html.unescape(posting.get("jobDescription", "")), 'html.parser').get_text("\n", strip=True)
+        if len(description) >= 300:
+            locations = [posting.get("location", "")] + posting.get("additionalLocations", [])
+            return f"{posting.get('title', '')}\n{'; '.join(locations)}\n\n{description}".strip()
+    except (requests.RequestException, ValueError, TypeError):
+        pass
     return None
 
 def try_fetch_from_greenhouse_api(url: str) -> str | None:
@@ -222,25 +322,31 @@ def try_fetch_from_greenhouse_api(url: str) -> str | None:
 
 async def fetch_job_description(apply_url: str) -> str | None:
     """Scrape the full body text of a job page using API, HTTP, or Playwright."""
-    gh_text = try_fetch_from_greenhouse_api(apply_url)
+    apply_url = listing_url(apply_url)
+    parsed = urlparse(apply_url)
+    if (parsed.hostname or "").endswith(".myworkdayjobs.com"):
+        content = await asyncio.to_thread(fetch_workday_content, apply_url)
+        if content:
+            return content
+    gh_text = await asyncio.to_thread(try_fetch_from_greenhouse_api, apply_url)
     if gh_text:
         return gh_text
 
-    if "icims.com" in apply_url:
-        try:
-            r = requests.get(apply_url, timeout=15)
-            if r.status_code == 200:
-                soup = BeautifulSoup(r.text, 'html.parser')
-                content = soup.find(class_="iCIMS_JobContent") or soup
-                return "\n".join([line.strip() for line in content.get_text().splitlines() if line.strip()])
-        except Exception as e:
-            print(f"[!] Warning: iCIMS requests fetch failed for {apply_url}: {e}")
+    if (parsed.hostname or "").endswith(".icims.com"):
+        content = await asyncio.to_thread(fetch_icims_content, apply_url)
+        if content:
+            return content
+
+    if dict(parse_qsl(parsed.query)).get("gh_jid"):
+        content = await asyncio.to_thread(discover_greenhouse_content, apply_url)
+        if content:
+            return content
 
     chrome_path = _find_chrome()
 
     async with async_playwright() as p:
         launch_kwargs = {
-            "headless": True,
+            "headless": False,
             "timeout": 60000,
             "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox"]
         }
@@ -260,8 +366,46 @@ async def fetch_job_description(apply_url: str) -> str | None:
                 "Accept-Language": "en-US,en;q=0.9",
                 "Referer": "https://www.google.com/"
             })
-            await page.goto(apply_url, timeout=35000, wait_until="load")
+            await page.goto(apply_url, timeout=35000, wait_until="domcontentloaded")
             await page.wait_for_timeout(3000)
+            if (parsed.hostname or "").endswith(".myworkdayjobs.com"):
+                try:
+                    await page.locator('[data-automation-id="jobPostingDescription"]').wait_for(timeout=15000)
+                except Exception:
+                    pass
+
+            # Board scripts may be rendered dynamically rather than in the HTTP HTML.
+            content = await asyncio.to_thread(discover_greenhouse_content, apply_url, await page.content())
+            if content:
+                return content
+
+            # Preserve the requested job identity when following a careers-page link.
+            requested_id = dict(parse_qsl(urlparse(apply_url).query)).get("gh_jid")
+            if requested_id:
+                links = await page.locator('a[href]').evaluate_all("els => els.map(e => e.href)")
+                for link in links:
+                    target = urlparse(link)
+                    if (target.hostname == urlparse(page.url).hostname
+                            and target.path != urlparse(page.url).path
+                            and dict(parse_qsl(target.query)).get("gh_jid") == requested_id):
+                        await page.goto(link, wait_until="domcontentloaded", timeout=35000)
+                        await page.wait_for_timeout(2000)
+                        content = await asyncio.to_thread(discover_greenhouse_content, link, await page.content())
+                        if content:
+                            return content
+                        break
+
+            # iCIMS descriptions live in a frame, separate from the branding body.
+            for frame in page.frames:
+                if frame == page.main_frame or not (urlparse(frame.url).hostname or "").endswith(".icims.com"):
+                    continue
+                try:
+                    await frame.locator('.iCIMS_JobContent').wait_for(timeout=5000)
+                    content = extract_icims_content(await frame.content())
+                    if content:
+                        return content
+                except Exception:
+                    continue
 
             # Check for embedded Greenhouse iframe
             for iframe in await page.locator("iframe").all():
@@ -276,7 +420,8 @@ async def fetch_job_description(apply_url: str) -> str | None:
                         if parts and parts[-1].isdigit():
                             job_id = parts[-1]
                     if board_token and job_id:
-                        result = _fetch_greenhouse_api(board_token, job_id)
+                        # An embedded jobs list must not override the requested role.
+                        result = await asyncio.to_thread(_fetch_greenhouse_api, board_token, requested_id or job_id)
                         if result:
                             return result
 

@@ -1,0 +1,94 @@
+{
+  "personal_info": {
+    "first_name": "Alex",
+    "preferred_name": "",
+    "last_name": "Example",
+    "email": "alex@example.com",
+    "phone": "+1 202-555-0100",
+    "address": "123 Example Street, Apt 1",
+    "city": "Example City",
+    "state": "California",
+    "zip_code": "00000",
+    "country": "United States of America",
+    "github": "https://github.com/example",
+    "linkedin": "https://www.linkedin.com/in/example",
+    "portfolio": "https://example.com",
+    "preferred_locations": []
+  },
+  "role_preferences": {
+    "target_titles": [
+      "Software Engineer",
+      "Data Engineer"
+    ],
+    "anticipated_start_date_preference": "",
+    "location_and_relocation_rule": "",
+    "work_arrangement_preference": "",
+    "work_arrangement_rule": "",
+    "recent_work_context": ""
+  },
+  "education_history": [
+    {
+      "institution_variants": [
+        "Example University"
+      ],
+      "degree_type": "Bachelor's Degree",
+      "degree_abbreviation": "BS",
+      "degree_search_variants": [
+        "Bachelor of Science"
+      ],
+      "major_variants": [
+        "Computer Science"
+      ],
+      "major_search_term": "Computer Science",
+      "start_month": "August",
+      "start_year": "2022",
+      "end_month": "May",
+      "end_year": "2026",
+      "gpa": "",
+      "anticipated_completed_credit_hours": "",
+      "current_status": "Graduated",
+      "institution_city": "Example City"
+    }
+  ],
+  "work_experience": [],
+  "projects": [],
+  "personal_projects": [],
+  "personal_connections": {},
+  "skills": [
+    "Python",
+    "SQL"
+  ],
+  "languages": [
+    {
+      "language": "English",
+      "proficiency": "Fluent"
+    }
+  ],
+  "resume_path": "data/resume.pdf",
+  "transcript_path": "",
+  "job_board_mappings": {
+    "requires_visa_sponsorship": "",
+    "legally_authorized_to_work_us": "",
+    "holds_security_clearance": "",
+    "eligible_to_obtain_clearance": ""
+  },
+  "role_evaluation_preferences": {
+    "degree_equivalence": "Consider relevant higher degrees for bachelor-or-equivalent requirements unless the posting explicitly excludes them.",
+    "mixed_clearance_wording": "Do not claim an existing clearance; evaluate any obtain-clearance pathway against actual candidate facts.",
+    "start_date": "Treat anticipated availability as the earliest start date; later starts are acceptable."
+  },
+  "routing_priorities": {},
+  "compensation_rules": {},
+  "regulatory_self_identification": {
+    "primary_demographic_action": "Decline to disclose where available",
+    "fallback_gender": "",
+    "fallback_hispanic_ethnicity": "",
+    "fallback_race": "",
+    "veteran_status_selection": "",
+    "disability_answer": "",
+    "disability_status_rule": ""
+  },
+  "workday_accounts": {},
+  "workday_qa_examples": [],
+  "prepared_answers": {}
+}

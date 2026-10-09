@@ -9,8 +9,9 @@ import json
 import sqlite3
 import datetime
 import re
+import tempfile
 from pathlib import Path
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
 # Base directories and paths
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -45,7 +46,7 @@ SCHEMA_SQL = """
 """
 
 def clean_url(url: str) -> str:
-    """Normalize URL by stripping query parameters, trailing slashes, and locale prefixes (e.g. /en-US/)."""
+    """Normalize URLs while preserving query parameters that identify a job."""
     if not url:
         return ""
     try:
@@ -53,9 +54,28 @@ def clean_url(url: str) -> str:
         path = parsed.path.rstrip("/")
         # Strip Workday/standard locale segment like /en-US/, /en-CA/, etc.
         path = re.sub(r"^/([a-zA-Z]{2}(-[a-zA-Z]{2,4})?)(/.*)$", r"\3", path)
-        return urlunparse((parsed.scheme, parsed.netloc.lower(), path, "", "", ""))
+        if parsed.netloc.lower().endswith(".myworkdayjobs.com"):
+            path = re.sub(r"/apply(?:/applyManually)?$", "", path)
+        query = urlencode(sorted((k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+                                 if k.lower() in {"gh_jid", "jobid", "job_id", "jid", "requisitionid", "reqid",
+                                                  "job", "token", "for", "partnerid", "siteid", "pagetype"}))
+        return urlunparse((parsed.scheme, parsed.netloc.lower(), path, "", query, ""))
     except Exception:
         return url.strip()
+
+def write_json_atomic(path: Path, value):
+    """Interrupted writes must leave the previous history file readable."""
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=path.name + ".", suffix=".tmp", delete=False) as handle:
+            temporary = Path(handle.name)
+            json.dump(value, handle, indent=2, ensure_ascii=False)
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
 
 # --- Manifests & History ---
 
@@ -72,7 +92,7 @@ def load_applied_manifest() -> dict:
 
 def save_to_applied_manifest(url: str, company: str = "", role: str = "", date_applied: str = None):
     """Save an applied job to the persistent manifest."""
-    if not date_applied:
+    if date_applied is None:
         date_applied = datetime.date.today().isoformat()
     manifest = load_applied_manifest()
     c_url = clean_url(url)
@@ -84,8 +104,7 @@ def save_to_applied_manifest(url: str, company: str = "", role: str = "", date_a
         "updated_at": datetime.datetime.now().isoformat()
     }
     try:
-        with open(APPLIED_HISTORY_PATH, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2, ensure_ascii=False)
+        write_json_atomic(APPLIED_HISTORY_PATH, manifest)
         print(f"  [manifest] Saved {company or 'Job'} to persistent applied_history.json")
     except Exception as e:
         print(f"[!] Warning: Failed to write applied_history.json: {e}")
@@ -117,6 +136,7 @@ def record_filtered_jobs(entries: dict):
         else:
             reason = info.get("reason", "Filtered")
             meta = info
+        previous = history.get(c_url, {})
         history[c_url] = {
             "raw_url": url,
             "reason": reason,
@@ -125,9 +145,11 @@ def record_filtered_jobs(entries: dict):
             "date_filtered": meta.get("date", today_str),
             "updated_at": datetime.datetime.now().isoformat()
         }
+        for field in ("eval_metadata", "job_description"):
+            if field in meta or field in previous:
+                history[c_url][field] = meta.get(field, previous.get(field))
     try:
-        with open(FILTERED_HISTORY_PATH, "w", encoding="utf-8") as f:
-            json.dump(history, f, indent=2, ensure_ascii=False)
+        write_json_atomic(FILTERED_HISTORY_PATH, history)
     except Exception as e:
         print(f"[!] Warning: Failed to write filtered_history.json: {e}")
 
@@ -179,12 +201,10 @@ def is_job_snoozed(url: str) -> bool:
 
 def is_filtered_status(status: str, score: int = None) -> bool:
     """Check if a job status/score qualifies as ineligible or closed."""
-    if not status:
+    if not status or status.strip() == "Applied":
         return False
     s = status.strip()
     if s.startswith("Ineligible") or s.startswith("Closed"):
-        return True
-    if score is not None and score >= 3:
         return True
     return False
 
@@ -226,6 +246,8 @@ def import_csv_to_db():
     conn = get_db()
     cursor = conn.cursor()
 
+    applied = load_applied_manifest()
+    applied_by_url = {clean_url(entry.get("raw_url") or key): entry for key, entry in applied.items()}
     filtered_to_record = {}
     with open(CSV_PATH, "r", newline="", encoding="utf-8") as f:
         reader = csv.reader(f)
@@ -257,6 +279,20 @@ def import_csv_to_db():
             reason = get_val("Suitability Reason")
             apply_url = get_val("Apply URL")
 
+            # Applied history wins over stale CSV statuses and upstream closures.
+            cursor.execute("SELECT status, date_applied FROM jobs WHERE apply_url = ?", (apply_url,))
+            existing_state = cursor.fetchone()
+            if existing_state and existing_state[0] == "Applied":
+                status = "Applied"
+                date_applied = existing_state[1]
+            applied_entry = applied_by_url.get(clean_url(apply_url))
+            if applied_entry:
+                status = "Applied"
+                if not (existing_state and existing_state[0] == "Applied"):
+                    date_applied = applied_entry.get("date_applied") or date_applied
+            elif status == "Applied":
+                save_to_applied_manifest(apply_url, company or "", role or "", date_applied)
+
             # Prune ineligible/closed jobs
             if is_filtered_status(status, score):
                 filtered_to_record[apply_url] = {
@@ -270,10 +306,19 @@ def import_csv_to_db():
             desc = get_val("Job Description") or (details_cache.get(apply_url, {}).get("job_description", "") if apply_url else "")
 
             cursor.execute("""
-                INSERT OR REPLACE INTO jobs (
+                INSERT INTO jobs (
                     id, company, role, location, apply_url, category, status, score,
                     suitability_reason, job_description, date_added, date_evaluated, date_applied
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(apply_url) DO UPDATE SET
+                    company = excluded.company, role = excluded.role,
+                    location = excluded.location, category = excluded.category,
+                    status = CASE WHEN jobs.status = 'Applied' THEN jobs.status ELSE excluded.status END,
+                    score = excluded.score, suitability_reason = excluded.suitability_reason,
+                    job_description = excluded.job_description, date_added = excluded.date_added,
+                    date_evaluated = excluded.date_evaluated,
+                    date_applied = CASE WHEN jobs.status = 'Applied' THEN jobs.date_applied
+                                        ELSE COALESCE(NULLIF(jobs.date_applied, ''), excluded.date_applied) END
             """, (
                 job_id, company, role, location, apply_url, category, status, score,
                 reason, desc, date_added, date_evaluated, date_applied
@@ -298,13 +343,13 @@ def export_db_to_csv():
     cursor.execute("""
         SELECT apply_url, company, role, status, score, suitability_reason, date_evaluated
         FROM jobs
-        WHERE status LIKE 'Ineligible%' OR status LIKE 'Closed%' OR (score IS NOT NULL AND score >= 3)
+        WHERE status != 'Applied' AND (status LIKE 'Ineligible%' OR status LIKE 'Closed%')
     """)
     to_purge = cursor.fetchall()
     if to_purge:
         entries = {
             r[0]: {
-                "reason": r[3] or r[5] or "Ineligible/Closed",
+                "reason": (r[5] if r[3] == "Ineligible" else r[3]) or "Ineligible/Closed",
                 "company": r[1] or "",
                 "role": r[2] or "",
                 "date": r[6]
@@ -314,7 +359,7 @@ def export_db_to_csv():
         record_filtered_jobs(entries)
         cursor.execute("""
             DELETE FROM jobs
-            WHERE status LIKE 'Ineligible%' OR status LIKE 'Closed%' OR (score IS NOT NULL AND score >= 3)
+            WHERE status != 'Applied' AND (status LIKE 'Ineligible%' OR status LIKE 'Closed%')
         """)
         conn.commit()
 
@@ -413,9 +458,7 @@ def sync_applied_manifest():
 
     clean_manifest = {}
     for k, entry in manifest.items():
-        clean_manifest[clean_url(k)] = entry
-        if entry.get("raw_url"):
-            clean_manifest[clean_url(entry["raw_url"])] = entry
+        clean_manifest[clean_url(entry.get("raw_url") or k)] = entry
 
     updated_count = 0
     for row in rows:
@@ -426,9 +469,6 @@ def sync_applied_manifest():
             if row.get("Status") != "Applied":
                 row["Status"] = "Applied"
                 row["Date Applied"] = entry.get("date_applied", "")
-                updated_count += 1
-            elif not row.get("Date Applied") and entry.get("date_applied"):
-                row["Date Applied"] = entry.get("date_applied")
                 updated_count += 1
 
     if updated_count > 0:

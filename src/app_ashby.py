@@ -876,7 +876,7 @@ def _mark_applied(job_url: str):
 
 # ── Main applicator ───────────────────────────────────────────────────────────
 
-async def main(job_url: str, headed: bool = False, no_submit: bool = False):
+async def main(job_url: str, headed: bool = True, no_submit: bool = False):
     _report["started"] = datetime.datetime.now().isoformat()
 
     print(f"[AB] Job URL    : {job_url}")
@@ -1090,7 +1090,8 @@ if __name__ == "__main__":
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument("job_url", help="Ashby application URL (jobs.ashbyhq.com/{company}/{uuid}/application)")
+    parser.add_argument("--headless", action="store_true", help="Explicitly run without a visible browser")
     parser.add_argument("--show", action="store_true", help="Show Chrome window (required to submit)")
     parser.add_argument("--no-submit", action="store_true", help="Fill form and verify without submitting (dry-run)")
     args = parser.parse_args()
-    asyncio.run(main(args.job_url, headed=args.show, no_submit=args.no_submit))
+    asyncio.run(main(args.job_url, headed=args.show or not args.headless, no_submit=args.no_submit))

@@ -18,6 +18,7 @@ because DOM strategies differ between ATSes.
 import datetime, json, os, re, sys
 from pathlib import Path
 from dotenv import load_dotenv
+from browser_utils import _find_chrome
 
 # ── Platform UTF-8 fix ────────────────────────────────────────────────────────
 if hasattr(sys.stdout, "reconfigure"):
@@ -32,27 +33,9 @@ ARTIFACTS_DIR = REPO_ROOT / "artifacts"
 load_dotenv(DATA_DIR / ".env")
 from tracker_db import snooze_job_by_url, is_job_snoozed, load_snoozed_jobs
 
-# ── Chrome path ───────────────────────────────────────────────────────────────
-def _find_chrome() -> str:
-    system = _plat.system()
-    candidates = []
-    if system == "Darwin":
-        candidates = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
-    elif system == "Windows":
-        candidates = [
-            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
-        ]
-    else:
-        candidates = ["/usr/bin/google-chrome", "/usr/bin/chromium-browser",
-                      "/usr/bin/chromium", "/snap/bin/chromium"]
-    for p in candidates:
-        if os.path.exists(p):
-            return p
-    return ""
-
 # ── Library loading ───────────────────────────────────────────────────────────
+if not (DATA_DIR / "library.json").exists():
+    raise SystemExit("Missing data/library.json. Run: python scripts/init_local.py, then edit your profile.")
 LIBRARY = json.loads((DATA_DIR / "library.json").read_text(encoding="utf-8"))
 PI      = LIBRARY["personal_info"]
 WE      = LIBRARY.get("work_experience", [])
@@ -140,9 +123,9 @@ Given a list of form fields (with labels, types, and available options), return 
 Rules:
 - Use candidate profile to answer accurately and honestly.
 - Suffix fields (e.g. 'Suffix', 'Name Suffix'): The candidate has NO suffix. ALWAYS select 'Select One' or leave empty. NEVER select 'II', 'III', 'IV', 'Jr.', etc.
-- "I have a preferred name" checkbox: Unless explicitly asked to set a nickname, leave unchecked ('false') to avoid duplicate name validation issues on Workday; candidate legal name ('Joshua Li') is standard.
+- "I have a preferred name" checkbox: Unless explicitly asked to set a nickname, leave unchecked ('false') to avoid duplicate name validation issues on Workday; use the candidate's legal name from personal_info.
 - "First Name" / "Last Name" / "Address" / "City" / "State" / "Zip" / "Postal Code" / "Country" (in personal/contact address section) → use personal_info residence (United States of America), NEVER job listing location.
-- Address Line 1 and Line 2: If the form provides separate Address Line 1 and Address Line 2 (or Apt/Suite/Unit) fields, put '800 S Abel St' in Address Line 1 and 'Unit 506' in Address Line 2.
+- Address Line 1 and Line 2: If the form provides separate Address Line 1 and Address Line 2 (or Apt/Suite/Unit) fields, split the personal_info address into the street address and apartment/unit. Preserve the candidate's actual address.
 - "How did you hear" → "LinkedIn" or closest available option.
 - Visa/sponsorship → use job_board_mappings.requires_visa_sponsorship.
 - Salary/compensation → use job_listing_salary if set (pick the range option closest to it); otherwise use compensation_rules.baseline_target_pay.

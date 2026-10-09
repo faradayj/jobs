@@ -52,7 +52,7 @@ def run_ingest():
     """Download latest SimplifyJobs README dev branch and parse into active tracker."""
     print("[*] Fetching latest jobs list from Simplify repository...")
     try:
-        resp = requests.get(README_URL, timeout=15, verify=False)
+        resp = requests.get(README_URL, timeout=15)
         resp.raise_for_status()
         content = resp.text
     except Exception as e:
@@ -62,6 +62,11 @@ def run_ingest():
     jobs = parse_jobs_from_markdown(content)
     print(f"[+] Parsed {len(jobs)} total jobs from markdown.")
 
+    if not jobs:
+        raise RuntimeError("No jobs parsed; refusing to change the existing tracker.")
+    sync_applied_manifest()
+    applied_manifest = load_applied_manifest()
+    applied_urls = {clean_url(entry.get("raw_url") or key) for key, entry in applied_manifest.items()}
     filtered_manifest = load_filtered_history()
     active_urls = set()
     new_jobs_count = 0
@@ -73,6 +78,11 @@ def run_ingest():
     for job in jobs:
         url = job['apply_url']
         c_url = clean_url(url)
+
+        cursor.execute("SELECT status FROM jobs WHERE apply_url = ?", (url,))
+        existing_status = cursor.fetchone()
+        if c_url in applied_urls or (existing_status and existing_status[0] == "Applied"):
+            continue
 
         # Skip if previously rejected/filtered
         if c_url in filtered_manifest or url in filtered_manifest:
@@ -106,7 +116,7 @@ def run_ingest():
     # Remove active jobs that disappeared from Simplify list
     cursor.execute("""
         SELECT id, company, role, apply_url FROM jobs
-        WHERE status IN ('Pending Evaluation', 'Eligible (Priority 1)', 'Eligible (Priority 2)', 'Fetch Failed / Manual Review', 'Evaluation Error')
+        WHERE status IN ('Pending Evaluation', 'Eligible (Priority 1)', 'Eligible (Priority 2)', 'Fetch Failed / Manual Review', 'Evaluation Error', 'Needs Review', 'Eligible (Priority 3)')
     """)
     db_active_jobs = cursor.fetchall()
 
@@ -320,7 +330,7 @@ def interactive_apply_loop():
 
         print(f"[*] Launching applicator for {company} - {role}...")
         try:
-            subprocess.run([sys.executable, app_script, url], check=True)
+            subprocess.run([sys.executable, app_script, url, "--show"], check=True)
             print(f"[+] Finished session for {company} - {role}.")
         except Exception as e:
             print(f"[!] Error running applicator: {e}")
@@ -334,7 +344,8 @@ def main():
     parser.add_argument("action", choices=["ingest", "ingest-lever", "evaluate", "status", "list", "apply", "apply-loop", "csv"], help="Action to perform")
     parser.add_argument("--board", type=str, help="Lever board token for ingest-lever (e.g. 'zoox')")
     parser.add_argument("--limit", type=int, default=10, help="Number of pending jobs to evaluate (-1 = all, default 10)")
-    parser.add_argument("--priority", type=int, default=1, choices=[1, 2, 3], help="Priority tier to list (1 or 2)")
+    parser.add_argument("--calibrate", action="store_true", help="Evaluate a diverse sample and save a calibration report (default 15 roles)")
+    parser.add_argument("--priority", type=int, default=1, choices=[1, 2, 3], help="Priority tier to list (1, 2, or 3)")
     parser.add_argument("--id", type=int, nargs="+", help="Job ID(s) to mark as applied")
     parser.add_argument("--url", type=str, nargs="+", help="Job URL(s) to mark as applied")
     parser.add_argument("--search", type=str, help="Search query (company or role) to mark matching jobs as applied")
@@ -361,7 +372,7 @@ def main():
             elif args.import_scores:
                 run_import_scores()
             else:
-                asyncio.run(run_evaluate(limit=args.limit, dry_run=args.dry_run))
+                asyncio.run(run_evaluate(limit=(15 if args.calibrate and args.limit == 10 else args.limit), dry_run=args.dry_run, calibrate=args.calibrate))
         elif args.action == "status":
             show_status()
         elif args.action == "list":

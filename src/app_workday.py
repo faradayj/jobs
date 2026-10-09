@@ -126,7 +126,7 @@ def _write_report():
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-async def main(job_url: str, headed: bool = False, no_submit: bool = False):
+async def main(job_url: str, headed: bool = True, no_submit: bool = False):
     job_url = normalize_workday_url(job_url)
     mode = "DeepSeek" if DEEPSEEK_KEY else "rule-based fallback"
     key_hint = f"sk-...{DEEPSEEK_KEY[-4:]}" if DEEPSEEK_KEY else "NOT SET (add DEEPSEEK_API_KEY to data/.env)"
@@ -577,7 +577,7 @@ if __name__ == "__main__":
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
     args = sys.argv[1:]
-    headed = "--show" in args
+    headed = "--headless" not in args or "--show" in args
     no_submit = "--no-submit" in args
     url_args = [a for a in args if not a.startswith("--")]
     if not url_args:

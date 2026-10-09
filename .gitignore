@@ -1,41 +1,38 @@
-# Secrets & sensitive credentials
-.env
-data/.env
-data/*storage_state*.json
+# Candidate profiles, credentials, documents, and application history stay local.
+/data/
+/.env
+.env.*
+!.env.example
 
-# SQLite databases
+# Private working notes and machine-specific configuration.
+/HANDOFF.md
+/conductor/
+/.vscode/
+/.idea/
+
+# Runtime output, screenshots, browser sessions, and databases.
+/artifacts/
+/scratch/
+playwright_user_dir_*/
 *.db
-data/*.db
-data/jobs.db
-
-# Ephemeral runtime manifests
-data/snoozed_jobs.json
-
-# Build output, test scratchpads, and artifacts
-artifacts/
-scratch/
-data/resumes/generated_pdfs/
-__pycache__/
-*.pyc
-*.pyo
+*.db-shm
+*.db-wal
 *.log
 
-# OS & Environment
+# Python environments, caches, and build output.
+__pycache__/
+*.py[cod]
+/.venv/
+/venv/
+/ENV/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Operating system files.
 .DS_Store
 Thumbs.db
-.venv/
-venv/
-ENV/
-.vscode/
-.idea/
-
-# Playwright browser profiles
-playwright_user_dir_*/
-
-# Keep tracked (do NOT ignore):
-# data/jobs_tracker.csv   ← source of truth for job applications
-# data/jobs_details.json  ← evaluation output
-# data/library.json       ← candidate profile
-# data/resume_*.pdf       ← résumés
-# data/resumes/tex/       ← LaTeX résumé templates
-# src/*.py                ← all source code

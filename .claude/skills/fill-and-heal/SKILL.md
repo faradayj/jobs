@@ -30,17 +30,17 @@ User says something like:
 ### Step 1 — Run the bot
 
 ```bash
-python3 -u src/app_workday.py "JOB_URL" > artifacts/run.txt 2>&1
+python -u src/app_workday.py "JOB_URL" --show > artifacts/run.txt 2>&1
 ```
 
-- Runs **headless** by default (no dock-icon spam on macOS).
+- Runs in a **visible browser** by default. Keep `--show` explicit in testing commands.
 - Output goes to `run.txt`; also tails in the terminal when run interactively.
 - Bot auto-saves `artifacts/run_report.json` on finish (even if it crashed).
-- Add `--show` only for final visual inspection or when a screenshot alone isn't enough to diagnose.
+- Use `--show` throughout debugging so the user can inspect the browser.
 
 For rule-based-only testing (no DeepSeek key needed):
 ```bash
-python3 -u src/app_workday.py "JOB_URL" --sim-ds > artifacts/run.txt 2>&1
+python -u src/app_workday.py "JOB_URL" --show --sim-ds > artifacts/run.txt 2>&1
 ```
 
 ### Step 2 — Read the report
@@ -93,7 +93,7 @@ Common failure patterns and fixes:
 - The rule didn't fire: the label in `rule_based_answer` didn't match.
 - Fix: add the label substring to the relevant `label_match(label, ...)` call, or add a new
   case in the `button`/`select` block.
-- The postgraduate-enroll dropdown: verify `currently_in_grad` is True for ASU.
+- The postgraduate-enroll dropdown: verify `currently_in_grad` reflects the active education entry in the local profile.
 
 **Field filled but not committed (any page)**
 - React state didn't sync. After `exec_text`, the `input`/`change` events may not have fired.

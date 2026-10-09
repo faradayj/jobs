@@ -680,8 +680,9 @@ if __name__ == "__main__":
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument("job_url", help="Job URL (lifeattiktok.com/search/<ID> or careers.tiktok.com/resume/<ID>/apply)")
+    parser.add_argument("--headless", action="store_true", help="Explicitly run without a visible browser")
     parser.add_argument("--show", action="store_true", help="Show Chrome window for manual review")
     parser.add_argument("--no-submit", action="store_true", help="Fill form and verify without submitting (dry-run)")
     args = parser.parse_args()
 
-    asyncio.run(apply_tiktok_job(args.job_url, headed=args.show, no_submit=args.no_submit))
+    asyncio.run(apply_tiktok_job(args.job_url, headed=args.show or not args.headless, no_submit=args.no_submit))
